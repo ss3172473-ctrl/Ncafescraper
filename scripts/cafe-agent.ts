@@ -162,6 +162,7 @@ async function fillTitle(frame: Frame | Page, title: string): Promise<void> {
 }
 
 async function fillBody(frame: Frame | Page, body: string): Promise<void> {
+  const page = "keyboard" in frame ? frame : frame.page();
   const editorSelectors = [
     '.se-main-container [contenteditable="true"]',
     '.toastui-editor-contents[contenteditable="true"]',
@@ -177,9 +178,9 @@ async function fillBody(frame: Frame | Page, body: string): Promise<void> {
     const lines = body.split("\n");
     for (const line of lines) {
       if (line.trim().length > 0) {
-        await frame.keyboard.type(line, { delay: 8 });
+        await page.keyboard.type(line, { delay: 8 });
       }
-      await frame.keyboard.press("Enter");
+      await page.keyboard.press("Enter");
     }
     return;
   }

@@ -182,13 +182,15 @@ function getCafeUrl(cafeId: string): string {
 function getArticleFrame(page: Page): Frame | Page {
   return (
     page.frame({ name: "cafe_main" }) ||
+    page.frame({ name: "mainFrame" }) ||
     page.frames().find((f) => f.url().includes("ArticleRead")) ||
     page
   );
 }
 
 async function getClubId(page: Page, cafeId: string): Promise<string> {
-  await page.goto(`https://m.cafe.naver.com/${cafeId}`, { waitUntil: "domcontentloaded", timeout: 35000 });
+  // Use desktop cafe home because we will scrape desktop pages.
+  await page.goto(getCafeUrl(cafeId), { waitUntil: "domcontentloaded", timeout: 35000 });
   await sleep(1200);
 
   const candidates = page
@@ -246,7 +248,8 @@ async function fetchCandidatesFromSearchApi(
     rows.push({
       articleId: Number(item.articleId),
       url:
-        `https://m.cafe.naver.com/ArticleRead.nhn?clubid=${encodeURIComponent(cafeNumericId)}` +
+        // Open desktop article read page (cafe_main frame) to allow easy full-text copy behavior.
+        `https://cafe.naver.com/ArticleRead.nhn?clubid=${encodeURIComponent(cafeNumericId)}` +
         `&articleid=${encodeURIComponent(String(item.articleId))}` +
         `&boardtype=${encodeURIComponent(item.boardType || "L")}`,
       subject: String(item.subject || ""),
@@ -308,13 +311,45 @@ async function parsePost(page: Page, sourceUrl: string, cafeId: string, cafeName
     (await frame.locator(".title_text, h3, h2").first().textContent().catch(() => null))?.trim() ||
     (await page.title());
 
+  // Expand common "더보기/펼치기" UI so long posts aren't truncated in innerText.
+  // This is not a bypass; it's the same action a user would do before copy/paste.
+  const expandRegex = /더보기|펼쳐|전체\s*보기|전체\s*글|more/i;
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const candidates = frame.locator("button, a, span").filter({ hasText: expandRegex });
+    const count = await candidates.count().catch(() => 0);
+    if (count === 0) break;
+
+    // Click a few visible candidates (some pages have multiple "more" buttons).
+    const clicks = Math.min(count, 6);
+    for (let i = 0; i < clicks; i += 1) {
+      await candidates
+        .nth(i)
+        .click({ timeout: 1500 })
+        .catch(() => undefined);
+      await sleep(200);
+    }
+
+    // Scroll to trigger lazy-rendered content/comments.
+    await frame
+      .evaluate(() => {
+        window.scrollTo(0, document.body.scrollHeight);
+      })
+      .catch(() => undefined);
+    await sleep(400);
+  }
+
   // User-requested mode: store all visible text on the page as-is (no cleaning/segmentation).
-  const pageText = (await withTimeout(frame.locator("body").innerText(), 12000, "body innerText"))
-    .trim();
+  // On desktop cafe, content is often inside the cafe_main frame; use it as the copy-source.
+  const pageText = (await withTimeout(frame.locator("body").innerText(), 25000, "body innerText")).trim();
   if (!pageText) return null;
 
+  if (looksLikeJoinWall(pageText)) {
+    // If the user can't see it (membership wall), don't archive the wall text.
+    return null;
+  }
+
   const contentText = pageText;
-  const rawHtml = await withTimeout(frame.locator("body").innerHTML(), 12000, "body innerHTML");
+  const rawHtml = await withTimeout(frame.locator("body").innerHTML(), 20000, "body innerHTML");
 
   const fullText = pageText;
   const viewMatch = fullText.match(/조회\s*([\d,]+)/);

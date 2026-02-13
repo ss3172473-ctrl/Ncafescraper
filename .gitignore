@@ -26,6 +26,9 @@ temp_images/*.png
 .next/
 out/
 
+# Outputs (scrape CSV/log artifacts)
+outputs/
+
 # Build
 dist/
 build/
