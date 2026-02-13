@@ -111,15 +111,6 @@ function cleanCafeText(text: string): string {
   const dropIfIncludes = [
     "본문 바로가기",
     "메뉴",
-    "카페홈",
-    "가입",
-    "검색",
-    "앱 열기",
-    "기타 기능",
-    "쪽지",
-    "공유",
-    "신고",
-    "댓글",
     "카페에 가입하면 바로 글을 볼 수 있어요",
     "가입해 보세요",
     "10초 만에 가입하기",
@@ -127,7 +118,29 @@ function cleanCafeText(text: string): string {
     "최근 일주일 동안",
   ];
 
-  const cleaned = lines.filter((l) => !dropIfIncludes.some((p) => l.includes(p)));
+  const dropExact = new Set([
+    "카페홈",
+    "가입",
+    "검색",
+    "메뉴",
+    "앱 열기",
+    "기타 기능",
+    "쪽지",
+    "공유",
+    "신고",
+    "댓글",
+    "전체글",
+    "전체서비스",
+  ]);
+
+  const cleaned = lines.filter((l) => {
+    if (dropExact.has(l)) return false;
+    if (dropIfIncludes.some((p) => l.includes(p))) return false;
+    if (/^\d+(\.\d+)?만명의 멤버/.test(l)) return false;
+    if (/^최근 일주일 동안/.test(l)) return false;
+    return true;
+  });
+
   return cleaned.join("\n").trim();
 }
 
@@ -326,6 +339,7 @@ async function parsePost(page: Page, sourceUrl: string, cafeId: string, cafeName
     "#tbody",
     "#postContent",
     ".ContentRenderer",
+    "[class*='Article'] [class*='Content']",
     "[role='main']",
     "article",
   ];
