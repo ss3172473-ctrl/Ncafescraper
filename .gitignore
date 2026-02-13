@@ -49,3 +49,4 @@ Thumbs.db
 
 # TS build info
 *.tsbuildinfo
+.vercel
