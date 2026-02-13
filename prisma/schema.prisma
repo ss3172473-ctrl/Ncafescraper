@@ -6,7 +6,7 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
@@ -151,6 +151,7 @@ model ScrapePost {
   sourceUrl    String
   cafeId       String?
   cafeName     String?
+  cafeUrl      String?
   title        String?
   authorName   String?
   publishedAt  DateTime?

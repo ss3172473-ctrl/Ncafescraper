@@ -3,6 +3,7 @@ export interface SheetPostPayload {
   sourceUrl: string;
   cafeId: string;
   cafeName: string;
+  cafeUrl: string;
   title: string;
   authorName: string;
   publishedAt: string;
@@ -17,6 +18,7 @@ export interface SheetCommentPayload {
   sourceUrl: string;
   cafeId: string;
   cafeName: string;
+  cafeUrl: string;
   commentAuthor: string;
   commentBody: string;
   commentLikeCount: number;

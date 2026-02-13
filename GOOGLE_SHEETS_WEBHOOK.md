@@ -11,10 +11,10 @@ function doPost(e) {
   const commentSheet = ss.getSheetByName('comments') || ss.insertSheet('comments');
 
   if (postSheet.getLastRow() === 0) {
-    postSheet.appendRow(['jobId','sourceUrl','cafeId','cafeName','title','authorName','publishedAt','viewCount','likeCount','commentCount','contentText']);
+    postSheet.appendRow(['jobId','sourceUrl','cafeId','cafeName','cafeUrl','title','authorName','publishedAt','viewCount','likeCount','commentCount','contentText']);
   }
   if (commentSheet.getLastRow() === 0) {
-    commentSheet.appendRow(['jobId','sourceUrl','cafeId','cafeName','commentAuthor','commentBody','commentLikeCount','commentWrittenAt']);
+    commentSheet.appendRow(['jobId','sourceUrl','cafeId','cafeName','cafeUrl','commentAuthor','commentBody','commentLikeCount','commentWrittenAt']);
   }
 
   const postRows = Array.isArray(body.postRows) ? body.postRows : [];
@@ -22,7 +22,7 @@ function doPost(e) {
 
   if (postRows.length > 0) {
     const values = postRows.map(r => [
-      r.jobId || '', r.sourceUrl || '', r.cafeId || '', r.cafeName || '', r.title || '',
+      r.jobId || '', r.sourceUrl || '', r.cafeId || '', r.cafeName || '', r.cafeUrl || '', r.title || '',
       r.authorName || '', r.publishedAt || '', Number(r.viewCount || 0), Number(r.likeCount || 0),
       Number(r.commentCount || 0), r.contentText || ''
     ]);
@@ -31,7 +31,7 @@ function doPost(e) {
 
   if (commentRows.length > 0) {
     const values = commentRows.map(r => [
-      r.jobId || '', r.sourceUrl || '', r.cafeId || '', r.cafeName || '',
+      r.jobId || '', r.sourceUrl || '', r.cafeId || '', r.cafeName || '', r.cafeUrl || '',
       r.commentAuthor || '', r.commentBody || '', Number(r.commentLikeCount || 0), r.commentWrittenAt || ''
     ]);
     commentSheet.getRange(commentSheet.getLastRow() + 1, 1, values.length, values[0].length).setValues(values);

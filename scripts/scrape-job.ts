@@ -2,9 +2,13 @@ import "dotenv/config";
 import fs from "fs";
 import path from "path";
 import { PrismaClient } from "@prisma/client";
-import { chromium, Page } from "playwright";
+import { chromium } from "playwright-extra";
+import StealthPlugin from "puppeteer-extra-plugin-stealth";
+import type { Page, Frame } from "playwright";
 import { contentHash } from "../src/lib/scrape/hash";
 import { sendRowsToGoogleSheet } from "../src/lib/sheets";
+
+chromium.use(StealthPlugin());
 
 type ParsedComment = {
   authorName: string;
@@ -17,6 +21,7 @@ type ParsedPost = {
   sourceUrl: string;
   cafeId: string;
   cafeName: string;
+  cafeUrl: string;
   title: string;
   authorName: string;
   publishedAt: Date | null;
@@ -38,6 +43,18 @@ function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+async function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: NodeJS.Timeout | null = null;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`timeout: ${label}`)), ms);
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 function asInt(input: string): number {
   const value = Number((input || "").replace(/[^\d]/g, ""));
   return Number.isFinite(value) ? value : 0;
@@ -57,6 +74,11 @@ function isAllowedByWords(text: string, includeWords: string[], excludeWords: st
   }
 
   return true;
+}
+
+function matchesAnyKeyword(text: string, keywords: string[]): boolean {
+  const compact = text.replace(/\s+/g, "").toLowerCase();
+  return keywords.some((kw) => compact.includes(kw.replace(/\s+/g, "").toLowerCase()));
 }
 
 function toDateSafe(value: string | null): Date | null {
@@ -90,37 +112,80 @@ function clampByAutoThreshold(posts: ParsedPost[], useAutoFilter: boolean, minVi
   });
 }
 
-async function collectArticleUrls(page: Page, cafeId: string, keywords: string[], maxUrls: number): Promise<string[]> {
+function getCafeUrl(cafeId: string): string {
+  return `https://cafe.naver.com/${cafeId}`;
+}
+
+function getArticleFrame(page: Page): Frame | Page {
+  return (
+    page.frame({ name: "cafe_main" }) ||
+    page.frames().find((f) => f.url().includes("ArticleRead")) ||
+    page
+  );
+}
+
+async function getClubId(page: Page, cafeId: string): Promise<string> {
+  await page.goto(`https://m.cafe.naver.com/${cafeId}`, { waitUntil: "domcontentloaded", timeout: 35000 });
+  await sleep(1200);
+
+  const candidates = page
+    .frames()
+    .map((f) => f.url())
+    .concat([page.url()]);
+
+  for (const url of candidates) {
+    try {
+      const u = new URL(url);
+      const clubid = u.searchParams.get("clubid");
+      if (clubid) return clubid;
+    } catch {
+      // ignore
+    }
+  }
+
+  const html = await page.content();
+  const match =
+    html.match(/clubid=(\d+)/i) ||
+    html.match(/cafeId=(\d+)/i) ||
+    html.match(/\/cafes\/(\d+)\//i);
+  if (match?.[1]) return match[1];
+
+  throw new Error(`clubid를 찾지 못했습니다. cafeId=${cafeId}`);
+}
+
+async function collectArticleUrls(page: Page, cafeId: string, maxUrls: number): Promise<string[]> {
   const urls = new Set<string>();
+  const clubId = await getClubId(page, cafeId);
+  console.log(`[cafe] cafeId=${cafeId} clubId=${clubId}`);
 
-  for (const keyword of keywords) {
-    const query = encodeURIComponent(`${keyword} cafe.naver.com/${cafeId}`);
-    const searchUrl = `https://search.naver.com/search.naver?where=web&query=${query}`;
-    await page.goto(searchUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
-    await sleep(1200);
+  // Mobile home page has direct ArticleRead links. We scroll a bit to load more.
+  await page.goto(`https://m.cafe.naver.com/${cafeId}`, { waitUntil: "domcontentloaded", timeout: 35000 });
+  await sleep(1200);
 
-    const hrefs = await page.$$eval("a[href]", (elements) =>
-      elements
-        .map((el) => (el as HTMLAnchorElement).href)
-        .filter((href) => href.includes("cafe.naver.com"))
-    );
+  for (let i = 0; i < 10 && urls.size < maxUrls; i += 1) {
+    const hrefs = await page
+      .$$eval("a[href*='m.cafe.naver.com/ArticleRead.nhn']", (elements) =>
+        elements.map((el) => (el as HTMLAnchorElement).href).filter(Boolean)
+      )
+      .catch(() => []);
 
     for (const href of hrefs) {
-      if (!href.includes("cafe.naver.com")) continue;
-      if (!href.includes(cafeId) && !href.includes("/articles/") && !href.includes("ArticleRead")) continue;
-
+      if (!href.includes("clubid=") || !href.includes("articleid=")) continue;
       urls.add(href);
       if (urls.size >= maxUrls) break;
     }
 
     if (urls.size >= maxUrls) break;
-    await sleep(700);
+    await page.mouse.wheel(0, 1800);
+    await sleep(800);
   }
 
+  console.log(`[collect] cafe=${cafeId} urls=${urls.size}`);
   return Array.from(urls);
 }
 
 async function parsePost(page: Page, sourceUrl: string, cafeId: string, cafeName: string): Promise<ParsedPost | null> {
+  console.log(`[parse] ${sourceUrl}`);
   await page.goto(sourceUrl, { waitUntil: "domcontentloaded", timeout: 35000 });
   await sleep(1200);
 
@@ -128,8 +193,10 @@ async function parsePost(page: Page, sourceUrl: string, cafeId: string, cafeName
     throw new Error("네이버 로그인 세션이 만료되었습니다.");
   }
 
+  const frame = getArticleFrame(page);
+
   const title =
-    (await page.locator("h3, h2, .title_text").first().textContent())?.trim() ||
+    (await frame.locator(".title_text, h3, h2").first().textContent().catch(() => null))?.trim() ||
     (await page.title());
 
   const contentCandidates = [
@@ -144,14 +211,14 @@ async function parsePost(page: Page, sourceUrl: string, cafeId: string, cafeName
   let contentText = "";
   let rawHtml = "";
   for (const selector of contentCandidates) {
-    const loc = page.locator(selector).first();
+    const loc = frame.locator(selector).first();
     if ((await loc.count()) === 0) continue;
 
-    const text = ((await loc.innerText()) || "").trim();
+    const text = ((await withTimeout(loc.innerText(), 8000, `innerText ${selector}`)) || "").trim();
     if (text.length < 20) continue;
 
     contentText = text;
-    rawHtml = await loc.innerHTML();
+    rawHtml = await withTimeout(loc.innerHTML(), 8000, `innerHTML ${selector}`);
     break;
   }
 
@@ -159,29 +226,25 @@ async function parsePost(page: Page, sourceUrl: string, cafeId: string, cafeName
     return null;
   }
 
-  const fullText = await page.locator("body").innerText();
+  const fullText = await withTimeout(frame.locator("body").innerText(), 8000, "body innerText");
   const viewMatch = fullText.match(/조회\s*([\d,]+)/);
   const likeMatch = fullText.match(/좋아요\s*([\d,]+)/);
   const commentMatch = fullText.match(/댓글\s*([\d,]+)/);
 
   const authorName =
-    (await page.locator(".nickname, .nick, .author, .name").first().textContent())?.trim() ||
+    (await frame.locator(".nickname, .nick, .author, .name").first().textContent().catch(() => null))?.trim() ||
     "";
 
-  const publishedAttr = await page.locator("time").first().getAttribute("datetime").catch(() => null);
-  const publishedText = (await page.locator("time").first().textContent().catch(() => null)) || null;
+  const publishedAttr = await frame.locator("time").first().getAttribute("datetime").catch(() => null);
+  const publishedText = (await frame.locator("time").first().textContent().catch(() => null)) || null;
   const publishedAt = toDateSafe(publishedAttr || publishedText);
 
-  const comments = await page.$$eval("li, div", (elements) => {
+  const comments = await frame.$$eval("[class*='comment'], [id*='comment']", (elements) => {
     const rows: Array<{ authorName: string; body: string; likeCount: number }> = [];
 
     for (const el of elements) {
-      const cls = (el as HTMLElement).className || "";
-      if (typeof cls !== "string") continue;
-      if (!cls.toLowerCase().includes("comment")) continue;
-
       const text = (el.textContent || "").trim();
-      if (!text || text.length < 2 || text.length > 500) continue;
+      if (!text || text.length < 2 || text.length > 800) continue;
 
       const like = Number((text.match(/좋아요\s*([\d,]+)/)?.[1] || "0").replace(/[^\d]/g, "")) || 0;
       rows.push({
@@ -190,16 +253,17 @@ async function parsePost(page: Page, sourceUrl: string, cafeId: string, cafeName
         likeCount: like,
       });
 
-      if (rows.length >= 120) break;
+      if (rows.length >= 200) break;
     }
 
     return rows;
-  });
+  }).catch(() => []);
 
   return {
     sourceUrl: page.url(),
     cafeId,
     cafeName,
+    cafeUrl: getCafeUrl(cafeId),
     title: title || "",
     authorName,
     publishedAt,
@@ -281,9 +345,15 @@ async function run(jobId: string) {
     storageState: SESSION_FILE,
     locale: "ko-KR",
     viewport: { width: 1366, height: 900 },
+    userAgent:
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
   });
 
   const page = await context.newPage();
+  page.setDefaultTimeout(15000);
+  await page.addInitScript(`
+    Object.defineProperty(navigator, 'webdriver', { get: () => false });
+  `);
   const collected: ParsedPost[] = [];
 
   try {
@@ -294,7 +364,6 @@ async function run(jobId: string) {
       const urls = await collectArticleUrls(
         page,
         cafeId,
-        keywords,
         Math.max(10, Math.ceil(job.maxPosts / Math.max(1, cafeIds.length)))
       );
 
@@ -305,6 +374,9 @@ async function run(jobId: string) {
         if (!parsed) continue;
 
         const normalizedForMatch = `${parsed.title}\n${parsed.contentText}`;
+        if (!matchesAnyKeyword(normalizedForMatch, keywords)) {
+          continue;
+        }
         if (!isAllowedByWords(normalizedForMatch, includeWords, excludeWords)) {
           continue;
         }
@@ -338,6 +410,7 @@ async function run(jobId: string) {
     sourceUrl: string;
     cafeId: string;
     cafeName: string;
+    cafeUrl: string;
     title: string;
     authorName: string;
     publishedAt: string;
@@ -351,6 +424,7 @@ async function run(jobId: string) {
     sourceUrl: string;
     cafeId: string;
     cafeName: string;
+    cafeUrl: string;
     commentAuthor: string;
     commentBody: string;
     commentLikeCount: number;
@@ -368,6 +442,7 @@ async function run(jobId: string) {
         sourceUrl: post.sourceUrl,
         cafeId: post.cafeId,
         cafeName: post.cafeName,
+        cafeUrl: post.cafeUrl,
         title: post.title,
         authorName: post.authorName,
         publishedAt: post.publishedAt,
@@ -396,6 +471,7 @@ async function run(jobId: string) {
         sourceUrl: post.sourceUrl,
         cafeId: post.cafeId,
         cafeName: post.cafeName,
+        cafeUrl: post.cafeUrl,
         commentAuthor: comment.authorName,
         commentBody: comment.body,
         commentLikeCount: comment.likeCount,
@@ -408,6 +484,7 @@ async function run(jobId: string) {
       sourceUrl: post.sourceUrl,
       cafeId: post.cafeId,
       cafeName: post.cafeName,
+      cafeUrl: post.cafeUrl,
       title: post.title,
       authorName: post.authorName,
       publishedAt: post.publishedAt?.toISOString() || "",
