@@ -81,6 +81,37 @@ function matchesAnyKeyword(text: string, keywords: string[]): boolean {
   return keywords.some((kw) => compact.includes(kw.replace(/\s+/g, "").toLowerCase()));
 }
 
+function looksLikeJoinWall(text: string): boolean {
+  const t = text.replace(/\s+/g, " ");
+  const flags = [
+    "카페에 가입하면 바로 글을 볼 수 있어요",
+    "10초 만에 가입하기",
+    "가입해 보세요",
+    "멤버와 함께하는",
+  ];
+  return flags.some((f) => t.includes(f));
+}
+
+function cleanCafeText(text: string): string {
+  const lines = text
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
+
+  const dropIfIncludes = [
+    "본문 바로가기",
+    "메뉴",
+    "카페에 가입하면 바로 글을 볼 수 있어요",
+    "가입해 보세요",
+    "10초 만에 가입하기",
+    "멤버와 함께하는",
+    "최근 일주일 동안",
+  ];
+
+  const cleaned = lines.filter((l) => !dropIfIncludes.some((p) => l.includes(p)));
+  return cleaned.join("\n").trim();
+}
+
 function toDateSafe(value: string | null): Date | null {
   if (!value) return null;
   const parsed = new Date(value);
@@ -193,6 +224,12 @@ async function parsePost(page: Page, sourceUrl: string, cafeId: string, cafeName
     throw new Error("네이버 로그인 세션이 만료되었습니다.");
   }
 
+  const bodyProbe = await page.locator("body").innerText().catch(() => "");
+  if (looksLikeJoinWall(bodyProbe)) {
+    console.log(`[skip] join wall detected: ${page.url()}`);
+    return null;
+  }
+
   const frame = getArticleFrame(page);
 
   const title =
@@ -201,11 +238,13 @@ async function parsePost(page: Page, sourceUrl: string, cafeId: string, cafeName
 
   const contentCandidates = [
     ".se-main-container",
+    ".ArticleContentBox",
+    ".article_viewer",
     "#tbody",
     "#postContent",
     ".ContentRenderer",
+    "[role='main']",
     "article",
-    "body",
   ];
 
   let contentText = "";
@@ -216,8 +255,9 @@ async function parsePost(page: Page, sourceUrl: string, cafeId: string, cafeName
 
     const text = ((await withTimeout(loc.innerText(), 8000, `innerText ${selector}`)) || "").trim();
     if (text.length < 20) continue;
+    if (looksLikeJoinWall(text)) continue;
 
-    contentText = text;
+    contentText = cleanCafeText(text);
     rawHtml = await withTimeout(loc.innerHTML(), 8000, `innerHTML ${selector}`);
     break;
   }
@@ -391,6 +431,8 @@ async function run(jobId: string) {
       if (collected.length >= job.maxPosts) break;
     }
   } finally {
+    // Persist refreshed cookies set during scraping (prevents future redirects to login/join walls).
+    await context.storageState({ path: SESSION_FILE }).catch(() => undefined);
     await context.close();
     await browser.close();
   }
