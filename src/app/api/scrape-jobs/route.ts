@@ -1,0 +1,128 @@
+import { NextRequest, NextResponse } from "next/server";
+import { prisma } from "@/lib/db";
+import { getCurrentUser } from "@/lib/auth";
+
+function parseStringList(input: unknown): string[] {
+  if (!Array.isArray(input)) return [];
+  return input
+    .map((item) => String(item || "").trim())
+    .filter((item) => item.length > 0);
+}
+
+function parseCommaList(input: unknown): string[] {
+  return String(input || "")
+    .split(",")
+    .map((item) => item.trim().replace(/\s+/g, ""))
+    .filter(Boolean);
+}
+
+export async function GET() {
+  const user = await getCurrentUser();
+  if (!user) {
+    return NextResponse.json(
+      { success: false, error: "UNAUTHORIZED" },
+      { status: 401 }
+    );
+  }
+
+  const jobs = await prisma.scrapeJob.findMany({
+    orderBy: { createdAt: "desc" },
+    take: 30,
+  });
+
+  return NextResponse.json({ success: true, data: jobs });
+}
+
+export async function POST(request: NextRequest) {
+  const user = await getCurrentUser();
+  if (!user) {
+    return NextResponse.json(
+      { success: false, error: "UNAUTHORIZED" },
+      { status: 401 }
+    );
+  }
+
+  try {
+    const body = await request.json();
+
+    const keywords = parseCommaList(body?.keywords);
+    const selectedCafes = Array.isArray(body?.selectedCafes)
+      ? body.selectedCafes
+      : [];
+
+    const cafeIds = selectedCafes
+      .map((item: { cafeId?: string }) => String(item?.cafeId || "").trim())
+      .filter(Boolean);
+
+    const cafeNames = selectedCafes
+      .map((item: { name?: string }) => String(item?.name || "").trim())
+      .filter(Boolean);
+
+    if (keywords.length === 0) {
+      return NextResponse.json(
+        { success: false, error: "키워드를 1개 이상 입력하세요. 쉼표(,)로 구분합니다." },
+        { status: 400 }
+      );
+    }
+
+    if (cafeIds.length === 0) {
+      return NextResponse.json(
+        { success: false, error: "스크랩할 카페를 1개 이상 선택하세요." },
+        { status: 400 }
+      );
+    }
+
+    const maxPostsRaw = Number(body?.maxPosts || 50);
+    const maxPosts = Number.isFinite(maxPostsRaw)
+      ? Math.min(300, Math.max(1, Math.floor(maxPostsRaw)))
+      : 50;
+
+    const includeKeywords = parseStringList(body?.includeKeywords);
+    const excludeKeywords = parseStringList(body?.excludeKeywords);
+
+    const fromDate = body?.fromDate ? new Date(body.fromDate) : null;
+    const toDate = body?.toDate ? new Date(body.toDate) : null;
+    const minViewCountRaw = Number(body?.minViewCount);
+    const minCommentCountRaw = Number(body?.minCommentCount);
+    const useAutoFilter = Boolean(body?.useAutoFilter);
+
+    const minViewCount =
+      Number.isFinite(minViewCountRaw) && minViewCountRaw >= 0
+        ? Math.floor(minViewCountRaw)
+        : null;
+    const minCommentCount =
+      Number.isFinite(minCommentCountRaw) && minCommentCountRaw >= 0
+        ? Math.floor(minCommentCountRaw)
+        : null;
+
+    const job = await prisma.scrapeJob.create({
+      data: {
+        createdBy: user.username,
+        status: "QUEUED",
+        keywords: JSON.stringify(keywords),
+        includeWords: JSON.stringify(includeKeywords),
+        excludeWords: JSON.stringify(excludeKeywords),
+        fromDate,
+        toDate,
+        minViewCount,
+        minCommentCount,
+        useAutoFilter,
+        maxPosts,
+        cafeIds: JSON.stringify(cafeIds),
+        cafeNames: JSON.stringify(cafeNames),
+      },
+    });
+
+    return NextResponse.json({
+      success: true,
+      data: job,
+      message: "작업이 등록되었습니다.",
+    });
+  } catch (error) {
+    console.error("스크랩 작업 생성 실패:", error);
+    return NextResponse.json(
+      { success: false, error: "스크랩 작업 생성 중 오류가 발생했습니다." },
+      { status: 500 }
+    );
+  }
+}

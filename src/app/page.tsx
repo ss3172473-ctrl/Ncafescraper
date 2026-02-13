@@ -1,387 +1,352 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
-import SessionStatus from "@/components/SessionStatus";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
-interface BrandLink {
-  id: string;
+type SessionInfo = {
+  hasSession: boolean;
+  isValid: boolean;
+  lastChecked?: string;
+};
+
+type JoinedCafe = {
+  cafeId: string;
+  name: string;
   url: string;
-  productName: string | null;
-  productPrice: string | null;
-  storeName: string | null;
-  imageUrls: string | null;
+};
+
+type ScrapeJob = {
+  id: string;
   status: string;
-  publishedAt: string | null;
-  postUrl: string | null;
+  keywords: string;
+  cafeNames: string | null;
+  minViewCount: number | null;
+  minCommentCount: number | null;
+  useAutoFilter: boolean;
+  maxPosts: number;
+  resultCount: number;
+  sheetSynced: number;
   errorMessage: string | null;
-  memo: string | null;
   createdAt: string;
+};
+
+function parseJsonList(input: string | null): string[] {
+  if (!input) return [];
+  try {
+    return JSON.parse(input);
+  } catch {
+    return [];
+  }
 }
 
-export default function Dashboard() {
-  const [links, setLinks] = useState<BrandLink[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [newUrl, setNewUrl] = useState("");
-  const [newMemo, setNewMemo] = useState("");
-  const [adding, setAdding] = useState(false);
-  const [publishingId, setPublishingId] = useState<string | null>(null);
+export default function DashboardPage() {
+  const [session, setSession] = useState<SessionInfo | null>(null);
+  const [sessionLoading, setSessionLoading] = useState(true);
 
-  const fetchLinks = useCallback(async () => {
+  const [cafes, setCafes] = useState<JoinedCafe[]>([]);
+  const [cafesLoading, setCafesLoading] = useState(false);
+  const [cafesError, setCafesError] = useState<string | null>(null);
+  const [selectedCafeIds, setSelectedCafeIds] = useState<string[]>([]);
+
+  const [jobs, setJobs] = useState<ScrapeJob[]>([]);
+  const [jobsLoading, setJobsLoading] = useState(true);
+
+  const [keywords, setKeywords] = useState("");
+  const [includeKeywordsText, setIncludeKeywordsText] = useState("");
+  const [excludeKeywordsText, setExcludeKeywordsText] = useState("");
+  const [fromDate, setFromDate] = useState("");
+  const [toDate, setToDate] = useState("");
+  const [minViewCount, setMinViewCount] = useState("");
+  const [minCommentCount, setMinCommentCount] = useState("");
+  const [useAutoFilter, setUseAutoFilter] = useState(true);
+  const [maxPosts, setMaxPosts] = useState(80);
+  const [creating, setCreating] = useState(false);
+  const [startingJobId, setStartingJobId] = useState<string | null>(null);
+
+  const selectedCafes = useMemo(
+    () => cafes.filter((cafe) => selectedCafeIds.includes(cafe.cafeId)),
+    [cafes, selectedCafeIds]
+  );
+
+  const fetchSession = useCallback(async () => {
     try {
-      setLoading(true);
-      const res = await fetch("/api/brandlinks");
+      setSessionLoading(true);
+      const res = await fetch("/api/session");
       const data = await res.json();
-      if (data.success) {
-        setLinks(data.data);
-      }
-    } catch (error) {
-      console.error("링크 조회 실패:", error);
+      if (data.success) setSession(data.data);
     } finally {
-      setLoading(false);
+      setSessionLoading(false);
+    }
+  }, []);
+
+  const fetchJobs = useCallback(async () => {
+    try {
+      setJobsLoading(true);
+      const res = await fetch("/api/scrape-jobs");
+      const data = await res.json();
+      if (data.success) setJobs(data.data);
+    } finally {
+      setJobsLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    fetchLinks();
-  }, [fetchLinks]);
+    fetchSession();
+    fetchJobs();
+  }, [fetchSession, fetchJobs]);
 
-  // 링크 추가
-  const handleAddLink = async () => {
-    if (!newUrl.trim()) {
-      alert("브랜드커넥트 URL을 입력하세요.");
+  const fetchCafes = async () => {
+    try {
+      setCafesLoading(true);
+      setCafesError(null);
+      const res = await fetch("/api/cafes");
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        setCafes([]);
+        setSelectedCafeIds([]);
+        setCafesError(data.error || "가입 카페 조회 실패");
+        return;
+      }
+      setCafes(data.data);
+      setSelectedCafeIds([]);
+    } finally {
+      setCafesLoading(false);
+    }
+  };
+
+  const toggleCafe = (cafeId: string) => {
+    setSelectedCafeIds((prev) =>
+      prev.includes(cafeId) ? prev.filter((id) => id !== cafeId) : [...prev, cafeId]
+    );
+  };
+
+  const startJob = async (jobId: string) => {
+    try {
+      setStartingJobId(jobId);
+      const res = await fetch(`/api/scrape-jobs/${jobId}/start`, { method: "POST" });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        alert(data.error || "작업 시작 실패");
+        return;
+      }
+      fetchJobs();
+      alert("작업을 시작했습니다. 서버에서 계속 진행됩니다.");
+    } finally {
+      setStartingJobId(null);
+    }
+  };
+
+  const handleCreateJob = async () => {
+    if (!keywords.trim()) {
+      alert("키워드를 입력하세요. 예: 공구,미개봉,할인");
+      return;
+    }
+    if (selectedCafes.length === 0) {
+      alert("스크랩할 카페를 선택하세요.");
       return;
     }
 
     try {
-      setAdding(true);
-      const res = await fetch("/api/brandlinks", {
+      setCreating(true);
+      const res = await fetch("/api/scrape-jobs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url: newUrl.trim(), memo: newMemo.trim() }),
+        body: JSON.stringify({
+          keywords,
+          includeKeywords: includeKeywordsText.split(",").map((v) => v.trim()).filter(Boolean),
+          excludeKeywords: excludeKeywordsText.split(",").map((v) => v.trim()).filter(Boolean),
+          fromDate: fromDate || null,
+          toDate: toDate || null,
+          minViewCount: minViewCount === "" ? null : Number(minViewCount),
+          minCommentCount: minCommentCount === "" ? null : Number(minCommentCount),
+          useAutoFilter,
+          maxPosts,
+          selectedCafes,
+        }),
       });
 
       const data = await res.json();
-
-      if (data.success) {
-        setNewUrl("");
-        setNewMemo("");
-        fetchLinks();
-        alert("링크가 추가되었습니다!");
-      } else {
-        alert(`오류: ${data.error}`);
+      if (!res.ok || !data.success) {
+        alert(data.error || "작업 생성 실패");
+        return;
       }
-    } catch (error) {
-      console.error("링크 추가 실패:", error);
-      alert("링크 추가 중 오류가 발생했습니다.");
+
+      await fetchJobs();
+      await startJob(data.data.id);
     } finally {
-      setAdding(false);
+      setCreating(false);
     }
   };
 
-  // 링크 삭제
-  const handleDeleteLink = async (id: string) => {
-    if (!confirm("정말 삭제하시겠습니까?")) return;
-
-    try {
-      const res = await fetch(`/api/brandlinks/${id}`, {
-        method: "DELETE",
-      });
-
-      if (res.ok) {
-        fetchLinks();
-      }
-    } catch (error) {
-      console.error("삭제 실패:", error);
-    }
-  };
-
-  // 발행하기
-  const handlePublish = async (id: string) => {
-    if (!confirm("이 상품으로 블로그 글을 발행하시겠습니까?")) return;
-
-    try {
-      setPublishingId(id);
-      const res = await fetch(`/api/brandlinks/${id}/publish`, {
-        method: "POST",
-      });
-
-      const data = await res.json();
-
-      if (data.success) {
-        alert("발행이 시작되었습니다. 브라우저가 열립니다.");
-        // 상태 폴링
-        const pollStatus = setInterval(async () => {
-          const statusRes = await fetch(`/api/brandlinks/${id}`);
-          const statusData = await statusRes.json();
-          
-          if (statusData.data.status !== "PUBLISHING") {
-            clearInterval(pollStatus);
-            fetchLinks();
-            setPublishingId(null);
-            
-            if (statusData.data.status === "PUBLISHED") {
-              alert("✅ 발행 완료!");
-            } else if (statusData.data.status === "FAILED") {
-              alert(`❌ 발행 실패: ${statusData.data.errorMessage}`);
-            }
-          }
-        }, 3000);
-      } else {
-        alert(`오류: ${data.error}`);
-        setPublishingId(null);
-      }
-    } catch (error) {
-      console.error("발행 실패:", error);
-      alert("발행 중 오류가 발생했습니다.");
-      setPublishingId(null);
-    }
-  };
-
-  // 통계 계산
-  const stats = {
-    total: links.length,
-    ready: links.filter((l) => l.status === "READY").length,
-    published: links.filter((l) => l.status === "PUBLISHED").length,
-    failed: links.filter((l) => l.status === "FAILED").length,
-  };
-
-  // 상태 배지 색상
-  const getStatusColor = (status: string) => {
-    switch (status) {
-      case "READY": return "bg-blue-100 text-blue-800";
-      case "PUBLISHING": return "bg-yellow-100 text-yellow-800";
-      case "PUBLISHED": return "bg-green-100 text-green-800";
-      case "FAILED": return "bg-red-100 text-red-800";
-      default: return "bg-gray-100 text-gray-800";
-    }
-  };
-
-  const getStatusText = (status: string) => {
-    switch (status) {
-      case "READY": return "대기";
-      case "PUBLISHING": return "발행중";
-      case "PUBLISHED": return "발행완료";
-      case "FAILED": return "실패";
-      default: return status;
-    }
+  const handleLogout = async () => {
+    await fetch("/api/auth/logout", { method: "POST" });
+    window.location.href = "/login";
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100">
-      {/* 헤더 */}
-      <header className="bg-white border-b border-slate-200 sticky top-0 z-10">
-        <div className="max-w-6xl mx-auto px-4 py-4">
+    <main className="min-h-screen bg-slate-100 p-4 md:p-8">
+      <div className="max-w-6xl mx-auto space-y-6">
+        <header className="bg-white border border-slate-200 rounded-2xl p-5 flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-bold text-slate-900">카페 아카이빙 대시보드</h1>
+            <p className="text-sm text-slate-500">열람 가능한 글을 조건 기반으로 아카이빙하고 Google Sheets로 보냅니다.</p>
+          </div>
+          <button onClick={handleLogout} className="px-4 py-2 text-sm bg-slate-900 text-white rounded-lg">
+            로그아웃
+          </button>
+        </header>
+
+        <section className="bg-white border border-slate-200 rounded-2xl p-5">
+          <h2 className="text-lg font-semibold text-slate-900">1) 카페 세션 확인</h2>
+          <p className="text-sm text-slate-500 mt-1">
+            {sessionLoading
+              ? "세션 확인 중..."
+              : session?.hasSession
+                ? `세션 사용 가능 (${session.lastChecked ? new Date(session.lastChecked).toLocaleString("ko-KR") : "시간 정보 없음"})`
+                : "세션 없음 (터미널에서 npm run cafe:login 실행)"}
+          </p>
+        </section>
+
+        <section className="bg-white border border-slate-200 rounded-2xl p-5">
           <div className="flex items-center justify-between">
-            <div>
-              <h1 className="text-xl font-bold text-slate-900">
-                📝 네이버 블로그 자동화
-              </h1>
-              <p className="text-sm text-slate-500">브랜드커넥트 링크 관리 &amp; 발행</p>
+            <h2 className="text-lg font-semibold text-slate-900">2) 카페 선택</h2>
+            <button onClick={fetchCafes} disabled={cafesLoading} className="px-3 py-2 bg-blue-600 text-white rounded-lg text-sm disabled:opacity-50">
+              {cafesLoading ? "불러오는 중..." : "가입 카페 불러오기"}
+            </button>
+          </div>
+
+          {cafesError && <p className="text-sm text-red-600 mt-3">{cafesError}</p>}
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-4 max-h-72 overflow-y-auto">
+            {cafes.map((cafe) => {
+              const checked = selectedCafeIds.includes(cafe.cafeId);
+              return (
+                <label key={cafe.cafeId} className={`border rounded-lg p-3 cursor-pointer ${checked ? "border-blue-500 bg-blue-50" : "border-slate-200"}`}>
+                  <div className="flex items-start gap-3">
+                    <input type="checkbox" checked={checked} onChange={() => toggleCafe(cafe.cafeId)} className="mt-1" />
+                    <div className="min-w-0">
+                      <p className="font-medium text-slate-900 truncate">{cafe.name}</p>
+                      <p className="text-xs text-slate-500 truncate">{cafe.url}</p>
+                    </div>
+                  </div>
+                </label>
+              );
+            })}
+          </div>
+        </section>
+
+        <section className="bg-white border border-slate-200 rounded-2xl p-5 space-y-4">
+          <h2 className="text-lg font-semibold text-slate-900">3) 실행 조건</h2>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="md:col-span-2">
+              <label className="text-sm text-slate-700">키워드 목록 (쉼표 구분, 공백 자동 제거)</label>
+              <input value={keywords} onChange={(e) => setKeywords(e.target.value)} className="w-full mt-1 px-3 py-2 border border-slate-300 rounded-lg" placeholder="공구,미개봉,한정판" />
             </div>
-            <button
-              onClick={() => fetchLinks()}
-              className="p-2 text-slate-600 hover:bg-slate-100 rounded-lg transition-colors"
-              title="새로고침"
-            >
-              🔄
-            </button>
-          </div>
-        </div>
-      </header>
 
-      <main className="max-w-6xl mx-auto px-4 py-6 space-y-6">
-        {/* 세션 상태 */}
-        <SessionStatus />
+            <div>
+              <label className="text-sm text-slate-700">포함 단어</label>
+              <input value={includeKeywordsText} onChange={(e) => setIncludeKeywordsText(e.target.value)} className="w-full mt-1 px-3 py-2 border border-slate-300 rounded-lg" placeholder="정품,직거래" />
+            </div>
 
-        {/* 통계 카드 */}
-        <div className="grid grid-cols-4 gap-4">
-          <div className="bg-white border border-slate-200 rounded-xl p-4 text-center">
-            <div className="text-3xl font-bold text-slate-800">{stats.total}</div>
-            <div className="text-sm text-slate-500">전체</div>
-          </div>
-          <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 text-center">
-            <div className="text-3xl font-bold text-blue-600">{stats.ready}</div>
-            <div className="text-sm text-blue-600">대기중</div>
-          </div>
-          <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-4 text-center">
-            <div className="text-3xl font-bold text-emerald-600">{stats.published}</div>
-            <div className="text-sm text-emerald-600">발행완료</div>
-          </div>
-          <div className="bg-red-50 border border-red-200 rounded-xl p-4 text-center">
-            <div className="text-3xl font-bold text-red-600">{stats.failed}</div>
-            <div className="text-sm text-red-600">실패</div>
-          </div>
-        </div>
+            <div>
+              <label className="text-sm text-slate-700">제외 단어</label>
+              <input value={excludeKeywordsText} onChange={(e) => setExcludeKeywordsText(e.target.value)} className="w-full mt-1 px-3 py-2 border border-slate-300 rounded-lg" placeholder="판매완료,홍보" />
+            </div>
 
-        {/* 링크 추가 폼 */}
-        <div className="bg-white border border-slate-200 rounded-xl p-4">
-          <h2 className="font-semibold text-slate-800 mb-3">➕ 브랜드커넥트 링크 추가</h2>
-          <div className="flex gap-3">
-            <input
-              type="url"
-              value={newUrl}
-              onChange={(e) => setNewUrl(e.target.value)}
-              placeholder="https://naver.me/xxx 또는 브랜드커넥트 URL"
-              className="flex-1 px-4 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
-            <input
-              type="text"
-              value={newMemo}
-              onChange={(e) => setNewMemo(e.target.value)}
-              placeholder="메모 (선택)"
-              className="w-48 px-4 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
-            <button
-              onClick={handleAddLink}
-              disabled={adding}
-              className="px-6 py-2 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-            >
-              {adding ? "추가 중..." : "추가"}
-            </button>
-          </div>
-        </div>
+            <div>
+              <label className="text-sm text-slate-700">최소 조회수</label>
+              <input type="number" min={0} value={minViewCount} onChange={(e) => setMinViewCount(e.target.value)} className="w-full mt-1 px-3 py-2 border border-slate-300 rounded-lg" />
+            </div>
 
-        {/* 링크 테이블 */}
-        <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
-          <table className="w-full">
-            <thead className="bg-slate-50 border-b border-slate-200">
-              <tr>
-                <th className="px-4 py-3 text-left text-sm font-medium text-slate-600">상품</th>
-                <th className="px-4 py-3 text-left text-sm font-medium text-slate-600">URL</th>
-                <th className="px-4 py-3 text-center text-sm font-medium text-slate-600">상태</th>
-                <th className="px-4 py-3 text-center text-sm font-medium text-slate-600">메모</th>
-                <th className="px-4 py-3 text-center text-sm font-medium text-slate-600">작업</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {loading ? (
-                <tr>
-                  <td colSpan={5} className="px-4 py-8 text-center text-slate-500">
-                    로딩 중...
-                  </td>
-                </tr>
-              ) : links.length === 0 ? (
-                <tr>
-                  <td colSpan={5} className="px-4 py-8 text-center text-slate-500">
-                    등록된 링크가 없습니다. 위에서 브랜드커넥트 링크를 추가하세요.
-                  </td>
-                </tr>
-              ) : (
-                links.map((link) => (
-                  <tr key={link.id} className="hover:bg-slate-50">
-                    <td className="px-4 py-3">
-                      <div className="flex items-center gap-3">
-                        {/* 이미지 썸네일 */}
-                        {link.imageUrls && JSON.parse(link.imageUrls)[0] && (
-                          <img
-                            src={JSON.parse(link.imageUrls)[0]}
-                            alt=""
-                            className="w-12 h-12 object-cover rounded-lg"
-                          />
-                        )}
-                        <div>
-                          <div className="font-medium text-slate-800">
-                            {link.productName || "(상품 정보 없음)"}
-                          </div>
-                          {link.productPrice && (
-                            <div className="text-sm text-slate-500">{link.productPrice}</div>
-                          )}
-                        </div>
-                      </div>
-                    </td>
-                    <td className="px-4 py-3">
-                      <a
-                        href={link.url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-blue-600 hover:underline text-sm"
-                      >
-                        {link.url.length > 40 ? link.url.substring(0, 40) + "..." : link.url}
-                      </a>
-                      {link.postUrl && (
-                        <div className="mt-1">
-                          <a
-                            href={link.postUrl}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-green-600 hover:underline text-xs"
-                          >
-                            📄 발행된 글 보기
-                          </a>
-                        </div>
-                      )}
-                    </td>
-                    <td className="px-4 py-3 text-center">
-                      <span className={`px-2 py-1 rounded-full text-xs font-medium ${getStatusColor(link.status)}`}>
-                        {getStatusText(link.status)}
-                      </span>
-                      {link.errorMessage && (
-                        <div className="text-xs text-red-500 mt-1" title={link.errorMessage}>
-                          ⚠️
-                        </div>
-                      )}
-                    </td>
-                    <td className="px-4 py-3 text-center text-sm text-slate-500">
-                      {link.memo || "-"}
-                    </td>
-                    <td className="px-4 py-3 text-center">
-                      <div className="flex items-center justify-center gap-2">
-                        {/* 발행하기 버튼 */}
-                        {link.status === "READY" && (
-                          <button
-                            onClick={() => handlePublish(link.id)}
-                            disabled={publishingId === link.id}
-                            className="px-3 py-1 text-sm bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-50 transition-colors"
-                          >
-                            {publishingId === link.id ? "⏳" : "🚀 발행"}
-                          </button>
-                        )}
-                        
-                        {/* 재발행 */}
-                        {link.status === "FAILED" && (
-                          <button
-                            onClick={() => handlePublish(link.id)}
-                            disabled={publishingId === link.id}
-                            className="px-3 py-1 text-sm bg-amber-500 text-white rounded hover:bg-amber-600 disabled:opacity-50 transition-colors"
-                          >
-                            🔄 재시도
-                          </button>
-                        )}
-                        
-                        {/* 삭제 */}
-                        <button
-                          onClick={() => handleDeleteLink(link.id)}
-                          className="px-3 py-1 text-sm bg-red-100 text-red-600 rounded hover:bg-red-200 transition-colors"
-                          title="삭제"
-                        >
-                          🗑️
-                        </button>
-                      </div>
-                    </td>
+            <div>
+              <label className="text-sm text-slate-700">최소 댓글수</label>
+              <input type="number" min={0} value={minCommentCount} onChange={(e) => setMinCommentCount(e.target.value)} className="w-full mt-1 px-3 py-2 border border-slate-300 rounded-lg" />
+            </div>
+
+            <div>
+              <label className="text-sm text-slate-700">시작일</label>
+              <input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} className="w-full mt-1 px-3 py-2 border border-slate-300 rounded-lg" />
+            </div>
+
+            <div>
+              <label className="text-sm text-slate-700">종료일</label>
+              <input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} className="w-full mt-1 px-3 py-2 border border-slate-300 rounded-lg" />
+            </div>
+
+            <div>
+              <label className="text-sm text-slate-700">최대 수집 글 수</label>
+              <input type="number" min={1} max={300} value={maxPosts} onChange={(e) => setMaxPosts(Number(e.target.value) || 80)} className="w-full mt-1 px-3 py-2 border border-slate-300 rounded-lg" />
+            </div>
+
+            <div className="flex items-center gap-2 mt-7">
+              <input id="autoFilter" type="checkbox" checked={useAutoFilter} onChange={(e) => setUseAutoFilter(e.target.checked)} />
+              <label htmlFor="autoFilter" className="text-sm text-slate-700">카페별 자동 임계치 사용</label>
+            </div>
+          </div>
+
+          <div className="text-sm text-slate-600">선택 카페: {selectedCafes.length}개</div>
+
+          <button onClick={handleCreateJob} disabled={creating} className="px-4 py-2 bg-emerald-600 text-white rounded-lg disabled:opacity-50">
+            {creating ? "등록/시작 중..." : "작업 등록 후 즉시 실행"}
+          </button>
+        </section>
+
+        <section className="bg-white border border-slate-200 rounded-2xl p-5">
+          <h2 className="text-lg font-semibold text-slate-900 mb-4">최근 작업</h2>
+          {jobsLoading ? (
+            <p className="text-sm text-slate-500">불러오는 중...</p>
+          ) : jobs.length === 0 ? (
+            <p className="text-sm text-slate-500">등록된 작업이 없습니다.</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-slate-200 text-slate-500">
+                    <th className="text-left py-2">생성일</th>
+                    <th className="text-left py-2">키워드</th>
+                    <th className="text-left py-2">카페</th>
+                    <th className="text-left py-2">필터</th>
+                    <th className="text-left py-2">결과</th>
+                    <th className="text-left py-2">상태</th>
+                    <th className="text-left py-2">작업</th>
                   </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
+                </thead>
+                <tbody>
+                  {jobs.map((job) => {
+                    const keywordText = parseJsonList(job.keywords).join(", ");
+                    const cafeText = parseJsonList(job.cafeNames).join(", ");
+                    const filterText = job.useAutoFilter
+                      ? "AUTO"
+                      : `조회 ${job.minViewCount ?? 0}+ / 댓글 ${job.minCommentCount ?? 0}+`;
 
-        {/* 사용 안내 */}
-        <div className="bg-slate-50 border border-slate-200 rounded-xl p-4">
-          <h3 className="font-medium text-slate-800 mb-2">💡 사용 방법</h3>
-          <ol className="text-sm text-slate-600 space-y-1 list-decimal list-inside">
-            <li>먼저 <code className="bg-slate-200 px-1 rounded">npm run login</code>으로 네이버 로그인</li>
-            <li>브랜드커넥트 링크를 추가 (https://naver.me/xxx 형태)</li>
-            <li>🚀 발행 버튼으로 블로그 글 자동 작성 &amp; 발행</li>
-          </ol>
-        </div>
-      </main>
-
-      {/* 푸터 */}
-      <footer className="border-t border-slate-200 bg-white mt-8">
-        <div className="max-w-6xl mx-auto px-4 py-4 text-center text-sm text-slate-500">
-          네이버 블로그 자동화 시스템 • 브랜드커넥트
-        </div>
-      </footer>
-    </div>
+                    return (
+                      <tr key={job.id} className="border-b border-slate-100">
+                        <td className="py-2">{new Date(job.createdAt).toLocaleString("ko-KR")}</td>
+                        <td className="py-2 max-w-[180px] truncate" title={keywordText}>{keywordText}</td>
+                        <td className="py-2 max-w-[180px] truncate" title={cafeText}>{cafeText}</td>
+                        <td className="py-2">{filterText}</td>
+                        <td className="py-2">DB {job.resultCount} / Sheet {job.sheetSynced}</td>
+                        <td className="py-2">{job.status}</td>
+                        <td className="py-2">
+                          {job.status !== "RUNNING" && (
+                            <button
+                              onClick={() => startJob(job.id)}
+                              disabled={startingJobId === job.id}
+                              className="px-2 py-1 text-xs bg-slate-800 text-white rounded"
+                            >
+                              {startingJobId === job.id ? "시작 중" : "재실행"}
+                            </button>
+                          )}
+                          {job.errorMessage && <p className="text-xs text-red-600 mt-1">{job.errorMessage}</p>}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+      </div>
+    </main>
   );
 }

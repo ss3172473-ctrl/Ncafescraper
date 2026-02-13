@@ -112,3 +112,72 @@ model BrandLink {
   @@index([status])
   @@index([createdAt])
 }
+
+// 카페 검색/스크랩 작업
+model ScrapeJob {
+  id             String   @id @default(uuid())
+  createdBy      String
+  status         String   @default("QUEUED") // QUEUED, RUNNING, SUCCESS, FAILED
+  keywords       String   // JSON 배열
+  includeWords   String?  // JSON 배열
+  excludeWords   String?  // JSON 배열
+  fromDate       DateTime?
+  toDate         DateTime?
+  minViewCount   Int?
+  minCommentCount Int?
+  useAutoFilter  Boolean  @default(false)
+  maxPosts       Int      @default(50)
+  cafeIds        String   // JSON 배열
+  cafeNames      String?  // JSON 배열
+  resultCount    Int      @default(0)
+  sheetSynced    Int      @default(0)
+  resultPath     String?  // CSV 경로
+  errorMessage   String?
+  startedAt      DateTime?
+  completedAt    DateTime?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  posts          ScrapePost[]
+
+  @@index([createdAt])
+  @@index([status])
+}
+
+model ScrapePost {
+  id           String   @id @default(uuid())
+  jobId        String
+  job          ScrapeJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  sourceUrl    String
+  cafeId       String?
+  cafeName     String?
+  title        String?
+  authorName   String?
+  publishedAt  DateTime?
+  viewCount    Int?
+  likeCount    Int?
+  commentCount Int?
+  contentText  String
+  contentHash  String   @unique
+  rawHtml      String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  comments     ScrapeComment[]
+
+  @@index([jobId])
+  @@index([publishedAt])
+}
+
+model ScrapeComment {
+  id         String    @id @default(uuid())
+  postId     String
+  post       ScrapePost @relation(fields: [postId], references: [id], onDelete: Cascade)
+  authorName String?
+  body       String
+  likeCount  Int?
+  writtenAt  DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([postId])
+}

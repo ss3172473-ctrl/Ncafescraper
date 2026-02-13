@@ -9,9 +9,13 @@
     "start": "next start",
     "lint": "eslint",
     "login": "npx ts-node --project tsconfig.scripts.json scripts/login.ts",
+    "cafe:login": "npx ts-node --project tsconfig.scripts.json scripts/cafe-login.ts",
+    "cafe:publish": "npx ts-node --project tsconfig.scripts.json scripts/cafe-agent.ts",
     "publish": "npx ts-node --project tsconfig.scripts.json scripts/simple-agent.ts",
     "db:studio": "npx prisma studio",
-    "db:push": "npx prisma db push"
+    "db:push": "npx prisma db push",
+    "scrape:job": "npx ts-node --project tsconfig.scripts.json scripts/scrape-job.ts",
+    "worker": "npx ts-node --project tsconfig.scripts.json scripts/queue-worker.ts"
   },
   "dependencies": {
     "@google/generative-ai": "^0.21.0",
