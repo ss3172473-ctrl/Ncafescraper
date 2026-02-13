@@ -291,6 +291,30 @@ async function parsePost(page: Page, sourceUrl: string, cafeId: string, cafeName
 
   const frame = getArticleFrame(page);
 
+  // Expand collapsed content if the mobile UI shows "더보기/전체보기" type buttons.
+  for (let i = 0; i < 6; i += 1) {
+    const btn = frame.locator("button, a").filter({ hasText: "더보기" }).first();
+    const btn2 = frame.locator("button, a").filter({ hasText: "전체" }).first();
+    const target = (await btn.count()) > 0 ? btn : (await btn2.count()) > 0 ? btn2 : null;
+    if (!target) break;
+    try {
+      await target.click({ timeout: 1500 });
+      await sleep(600);
+    } catch {
+      break;
+    }
+  }
+
+  // Scroll a bit to trigger lazy rendering inside the article.
+  try {
+    await page.mouse.wheel(0, 1800);
+    await sleep(400);
+    await page.mouse.wheel(0, 1800);
+    await sleep(400);
+  } catch {
+    // ignore
+  }
+
   const title =
     (await frame.locator(".title_text, h3, h2").first().textContent().catch(() => null))?.trim() ||
     (await page.title());
@@ -309,17 +333,20 @@ async function parsePost(page: Page, sourceUrl: string, cafeId: string, cafeName
   let contentText = "";
   let rawHtml = "";
   let rawText = "";
+  let bestLen = 0;
   for (const selector of contentCandidates) {
     const loc = frame.locator(selector).first();
     if ((await loc.count()) === 0) continue;
 
     const text = ((await withTimeout(loc.innerText(), 8000, `innerText ${selector}`)) || "").trim();
     if (text.length < 20) continue;
-    rawText = text;
+    const cleaned = cleanCafeText(text);
+    if (cleaned.length <= bestLen) continue;
 
-    contentText = cleanCafeText(text);
+    bestLen = cleaned.length;
+    rawText = text;
+    contentText = cleaned;
     rawHtml = await withTimeout(loc.innerHTML(), 8000, `innerHTML ${selector}`);
-    break;
   }
 
   if (!contentText) {
