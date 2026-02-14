@@ -577,12 +577,19 @@ async function run(jobId: string) {
       if (collected.length >= job.maxPosts) break;
     }
   } finally {
+    console.log(`[run] collected=${collected.length} (before close)`);
     // Persist refreshed cookies set during scraping (dev/local file-mode only).
     if (typeof storageState === "string") {
       await context.storageState({ path: storageState }).catch(() => undefined);
     }
-    await context.close();
-    await browser.close();
+    console.log("[run] closing context");
+    await withTimeout(context.close(), 20000, "context.close").catch((e) => {
+      console.error("[run] context.close failed:", e);
+    });
+    console.log("[run] closing browser");
+    await withTimeout(browser.close(), 20000, "browser.close").catch((e) => {
+      console.error("[run] browser.close failed:", e);
+    });
   }
 
   const filtered = clampByAutoThreshold(
@@ -593,6 +600,7 @@ async function run(jobId: string) {
   );
 
   const finalPosts = filtered.slice(0, job.maxPosts);
+  console.log(`[save] finalPosts=${finalPosts.length}`);
 
   let savedCount = 0;
   const postRows = [] as Array<{
@@ -614,11 +622,15 @@ async function run(jobId: string) {
   for (const post of finalPosts) {
     // Dedupe by URL first (more reliable than "all-page text" hashing, which can be UI-heavy).
     const existedByUrl = await prisma.scrapePost.findFirst({ where: { sourceUrl: post.sourceUrl } });
-    if (existedByUrl) continue;
+    if (existedByUrl) {
+      console.log(`[save] skip (existing url) ${post.sourceUrl}`);
+      continue;
+    }
 
     // Also keep a content hash for reference/secondary dedupe, but include URL to avoid false positives
     // when multiple posts share similar UI boilerplate text.
     const hash = contentHash(`${post.sourceUrl}\n${post.contentText}`);
+    console.log(`[save] creating post hash=${hash.slice(0, 10)} len=${post.contentText.length}`);
 
     const created = await prisma.scrapePost.create({
       data: {
@@ -663,12 +675,15 @@ async function run(jobId: string) {
 
   let syncedCount = 0;
   try {
+    console.log(`[sheet] sending postRows=${postRows.length}`);
     await sendRowsToGoogleSheet(postRows, commentRows);
     syncedCount = postRows.length;
+    console.log(`[sheet] sent ok count=${syncedCount}`);
   } catch (error) {
     console.error("Google Sheet 동기화 실패:", error);
   }
 
+  console.log(`[job] updating SUCCESS saved=${savedCount} synced=${syncedCount}`);
   await prisma.scrapeJob.update({
     where: { id: jobId },
     data: {
