@@ -1,0 +1,9 @@
+node_modules
+.next
+outputs
+playwright/storage
+.env
+.env.*
+.git
+.vercel
+*.log

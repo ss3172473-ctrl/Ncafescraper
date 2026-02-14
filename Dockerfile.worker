@@ -1,0 +1,18 @@
+FROM mcr.microsoft.com/playwright:v1.57.0-jammy
+
+WORKDIR /app
+
+# Install deps first for better caching
+COPY package.json package-lock.json ./
+RUN npm ci
+
+COPY prisma ./prisma
+RUN npx prisma generate
+
+COPY . .
+
+ENV NODE_ENV=production
+
+# Long-running worker process that polls DB for QUEUED jobs
+CMD ["npm", "run", "worker"]
+
