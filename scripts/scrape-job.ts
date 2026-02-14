@@ -371,6 +371,16 @@ async function extractPostBodyText(target: Frame | Page): Promise<string> {
   return "";
 }
 
+async function extractSourceLineText(target: Frame | Page): Promise<string> {
+  // Some posts show a source/citation line like:
+  // [출처] ... | 작성자 ...
+  const loc = (target as any).locator("text=/\\[출처\\]/").first();
+  const count = await loc.count().catch(() => 0);
+  if (count === 0) return "";
+  const txt = String(await loc.innerText().catch(() => "")).trim();
+  return txt;
+}
+
 async function extractCommentsText(target: Frame | Page): Promise<string> {
   // Scroll to the bottom to trigger comment rendering/lazy-load.
   await (target as any)
@@ -425,16 +435,16 @@ async function extractCommentsText(target: Frame | Page): Promise<string> {
   ];
 
   for (const sel of itemSelectors) {
-    const items = (target as any).locator(sel);
+    const items = scope.locator(sel);
     const n = await items.count().catch(() => 0);
     if (n <= 0) continue;
     const take = Math.min(n, 200);
     const parts: string[] = [];
     for (let i = 0; i < take; i += 1) {
       const item = items.nth(i);
-      const raw =
-        String(await item.locator(".text_comment, .comment_text_view").first().innerText().catch(() => "")).trim() ||
-        String(await item.innerText().catch(() => "")).trim();
+      // Use the whole comment item's visible text so we keep:
+      // nickname, comment body, timestamp, and "답글쓰기" (like copy/paste on screen).
+      const raw = String(await item.innerText().catch(() => "")).trim();
       if (raw) parts.push(raw);
     }
     const joined = parts.join("\n\n").trim();
@@ -680,6 +690,7 @@ async function parsePost(
   console.log("[parse] extracting post body/comments text");
   const bodyTextRaw = await extractPostBodyText(frame);
   const bodyText = String(bodyTextRaw || "").trim();
+  const sourceLine = String(await extractSourceLineText(frame).catch(() => "")).trim();
   let commentsTextRaw = await extractCommentsText(frame);
   let commentsText = String(commentsTextRaw || "").trim();
 
@@ -706,7 +717,8 @@ async function parsePost(
   if (looksLikePermissionWall(joinedForChecks)) return null;
   if (looksLikeProfileOrPostList(joinedForChecks) && !commentsText) return null;
 
-  const contentText = commentsText ? `${bodyText}\n\n[댓글]\n${commentsText}`.trim() : bodyText;
+  const bodyPlusSource = sourceLine && !bodyText.includes(sourceLine) ? `${bodyText}\n\n${sourceLine}`.trim() : bodyText;
+  const contentText = commentsText ? `${bodyPlusSource}\n\n[댓글]\n${commentsText}`.trim() : bodyPlusSource;
   console.log(
     `[parse] extracted body len=${bodyText.length} comments len=${commentsText.length} total len=${contentText.length}`
   );
