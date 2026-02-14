@@ -250,6 +250,98 @@ function toDateSafe(value: string | null): Date | null {
   return parsed;
 }
 
+function makeUtcFromKstParts(
+  yyyy: number,
+  mm: number,
+  dd: number,
+  hh: number,
+  min: number
+): Date {
+  // KST = UTC+9 (no DST). Convert "local KST clock time" to UTC Date.
+  return new Date(Date.UTC(yyyy, mm - 1, dd, hh - 9, min, 0, 0));
+}
+
+function parseNaverCafeDate(value: unknown): Date | null {
+  if (value === null || value === undefined) return null;
+
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? null : value;
+  }
+
+  if (typeof value === "number") {
+    const d = new Date(value);
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+
+  const raw = String(value).trim();
+  if (!raw) return null;
+
+  // Epoch millis as string
+  if (/^\d{13}$/.test(raw)) {
+    const d = new Date(Number(raw));
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+
+  // ISO-ish
+  const iso = toDateSafe(raw);
+  if (iso) return iso;
+
+  // Common visible format in Cafe: "2026.01.27. 13:48" or "2026.01.27."
+  const m =
+    raw.match(/(\d{4})\.(\d{2})\.(\d{2})\.\s*(\d{2}):(\d{2})/) ||
+    raw.match(/(\d{4})\.(\d{2})\.(\d{2})\./);
+  if (m) {
+    const yyyy = Number(m[1]);
+    const mm = Number(m[2]);
+    const dd = Number(m[3]);
+    const hh = m[4] ? Number(m[4]) : 0;
+    const min = m[5] ? Number(m[5]) : 0;
+    if (
+      Number.isFinite(yyyy) &&
+      Number.isFinite(mm) &&
+      Number.isFinite(dd) &&
+      Number.isFinite(hh) &&
+      Number.isFinite(min)
+    ) {
+      const d = makeUtcFromKstParts(yyyy, mm, dd, hh, min);
+      return Number.isNaN(d.getTime()) ? null : d;
+    }
+  }
+
+  return null;
+}
+
+function extractPublishedAtFromText(text: string): Date | null {
+  const t = String(text || "");
+  // In many FE pages, the header contains "2026.01.27. 13:48조회 350"
+  // Grab the first occurrence (it should be the post timestamp).
+  const m = t.match(/(\d{4})\.(\d{2})\.(\d{2})\.\s*(\d{2}):(\d{2})/);
+  if (!m) {
+    const m2 = t.match(/(\d{4})\.(\d{2})\.(\d{2})\./);
+    if (!m2) return null;
+    const yyyy = Number(m2[1]);
+    const mm = Number(m2[2]);
+    const dd = Number(m2[3]);
+    if (!Number.isFinite(yyyy) || !Number.isFinite(mm) || !Number.isFinite(dd)) return null;
+    return makeUtcFromKstParts(yyyy, mm, dd, 0, 0);
+  }
+  const yyyy = Number(m[1]);
+  const mm = Number(m[2]);
+  const dd = Number(m[3]);
+  const hh = Number(m[4]);
+  const min = Number(m[5]);
+  if (
+    !Number.isFinite(yyyy) ||
+    !Number.isFinite(mm) ||
+    !Number.isFinite(dd) ||
+    !Number.isFinite(hh) ||
+    !Number.isFinite(min)
+  ) {
+    return null;
+  }
+  return makeUtcFromKstParts(yyyy, mm, dd, hh, min);
+}
+
 function clampByAutoThreshold(posts: ParsedPost[], useAutoFilter: boolean, minView: number | null, minComment: number | null): ParsedPost[] {
   if (!useAutoFilter && minView === null && minComment === null) {
     return posts;
@@ -632,9 +724,7 @@ async function fetchCandidatesFromSearchApi(
 
     // Search API subjects can contain highlight markup like <em>...</em>.
     const subject = String(item.subject || "").replace(/<[^>]*>/g, "");
-    const addedAt = item.addDate ? new Date(String(item.addDate)) : null;
-    const addedAtSafe =
-      addedAt && !Number.isNaN(addedAt.getTime()) ? addedAt : null;
+    const addedAtSafe = parseNaverCafeDate(item.addDate);
 
     rows.push({
       articleId: Number(item.articleId),
@@ -870,9 +960,11 @@ async function parsePost(
     // can cause timeouts; skip it to improve reliability.
     const rawHtml: string | null = null;
 
-    // Skip author/date parsing (unstable selectors; not needed for the user's sheet workflow).
+    // Derive publishedAt from visible text (works for directUrls too).
+    const publishedAt = extractPublishedAtFromText(bodyText) || null;
+
+    // Skip author parsing (unstable selectors; not needed for the user's sheet workflow).
     const authorName = "";
-    const publishedAt = null;
 
     // We store combined text in contentText (body + comments) for Sheets.
     const comments: ParsedComment[] = [];
@@ -1053,7 +1145,7 @@ async function run(jobId: string) {
           parsed.viewCount = cand.readCount;
           parsed.likeCount = cand.likeCount;
           parsed.commentCount = cand.commentCount;
-          parsed.publishedAt = cand.addedAt;
+          if (cand.addedAt) parsed.publishedAt = cand.addedAt;
 
           if (!parsed.title || parsed.title.trim().length < 2) {
             parsed.title = cand.subject || parsed.title;
