@@ -612,9 +612,13 @@ async function run(jobId: string) {
   const commentRows = [] as Array<any>;
 
   for (const post of finalPosts) {
-    const hash = contentHash(post.contentText);
-    const existed = await prisma.scrapePost.findUnique({ where: { contentHash: hash } });
-    if (existed) continue;
+    // Dedupe by URL first (more reliable than "all-page text" hashing, which can be UI-heavy).
+    const existedByUrl = await prisma.scrapePost.findFirst({ where: { sourceUrl: post.sourceUrl } });
+    if (existedByUrl) continue;
+
+    // Also keep a content hash for reference/secondary dedupe, but include URL to avoid false positives
+    // when multiple posts share similar UI boilerplate text.
+    const hash = contentHash(`${post.sourceUrl}\n${post.contentText}`);
 
     const created = await prisma.scrapePost.create({
       data: {
