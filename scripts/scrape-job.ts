@@ -217,11 +217,20 @@ function getCafeUrl(cafeId: string): string {
 
 function getArticleFrame(page: Page): Frame | Page {
   return (
+    page.frames().find((f) => f.url().includes("ArticleRead")) ||
     page.frame({ name: "cafe_main" }) ||
     page.frame({ name: "mainFrame" }) ||
-    page.frames().find((f) => f.url().includes("ArticleRead")) ||
     page
   );
+}
+
+function getQueryParam(url: string, key: string): string | null {
+  try {
+    const u = new URL(url);
+    return u.searchParams.get(key);
+  } catch {
+    return null;
+  }
 }
 
 async function getClubId(page: Page, cafeId: string): Promise<string> {
@@ -351,32 +360,31 @@ async function parsePost(page: Page, sourceUrl: string, cafeId: string, cafeName
     throw new Error("네이버 로그인 세션이 만료되었습니다.");
   }
 
-  // Naver cafe PC pages can nest the real content inside a frame/iframe.
-  // To avoid missing the body (본문이 비어보이는 문제), pick the frame with the largest body text.
-  const candidateFrames: Array<Frame | Page> = [page, ...page.frames()];
-  console.log(`[parse] frames=${candidateFrames.length}`);
-
-  const frameTexts: Array<{ target: Frame | Page; text: string; len: number }> = [];
-  for (const target of candidateFrames) {
-    const url = "url" in target ? target.url() : "";
-    if (url.startsWith("about:") || url.trim() === "") continue;
-    const text = await withTimeout(
-      target.locator("body").innerText().catch(() => ""),
-      12000,
-      `body innerText (${url.slice(0, 80)})`
-    ).catch(() => "");
-    const trimmed = (text || "").trim();
-    if (trimmed) frameTexts.push({ target, text: trimmed, len: trimmed.length });
-  }
-
-  const best = frameTexts.sort((a, b) => b.len - a.len)[0];
-  if (best) {
-    const bestUrl = "url" in best.target ? best.target.url() : "";
-    console.log(`[parse] bestFrame len=${best.len} url=${bestUrl}`);
+  // Prefer the real ArticleRead iframe (본문이 들어있는 프레임). Outer wrapper pages often contain menus/lists.
+  const expectedArticleId = getQueryParam(sourceUrl, "articleid");
+  let frame: Frame | Page = page;
+  if (expectedArticleId) {
+    const match = page
+      .frames()
+      .find((f) => f.url().includes("ArticleRead") && f.url().includes(`articleid=${expectedArticleId}`));
+    if (match) {
+      frame = match;
+      console.log(`[parse] using ArticleRead frame url=${match.url()}`);
+    } else {
+      // Some pages encode the ArticleRead URL; try looser match.
+      const loose = page.frames().find((f) => f.url().includes(`articleid=${expectedArticleId}`));
+      if (loose) {
+        frame = loose;
+        console.log(`[parse] using loose articleid frame url=${loose.url()}`);
+      } else {
+        frame = getArticleFrame(page);
+        console.log("[parse] ArticleRead frame not found; fallback to heuristic frame");
+      }
+    }
   } else {
-    console.log("[parse] bestFrame not found; fallback to heuristic frame");
+    frame = getArticleFrame(page);
+    console.log("[parse] expectedArticleId missing; using heuristic frame");
   }
-  const frame = best?.target || getArticleFrame(page);
 
   const title =
     (await frame.locator(".title_text, h3, h2").first().textContent().catch(() => null))?.trim() ||
