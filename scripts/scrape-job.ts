@@ -362,6 +362,9 @@ async function fetchCandidatesFromSearchApi(
     const item = row.item;
     if (!item?.articleId) continue;
 
+    // Search API subjects can contain highlight markup like <em>...</em>.
+    const subject = String(item.subject || "").replace(/<[^>]*>/g, "");
+
     rows.push({
       articleId: Number(item.articleId),
       url:
@@ -369,7 +372,7 @@ async function fetchCandidatesFromSearchApi(
         `https://cafe.naver.com/ArticleRead.nhn` +
         `?clubid=${encodeURIComponent(cafeNumericId)}` +
         `&articleid=${encodeURIComponent(String(item.articleId))}`,
-      subject: String(item.subject || ""),
+      subject,
       readCount: Number(item.readCount || 0),
       commentCount: Number(item.commentCount || 0),
       likeCount: Number(item.likeItCount || 0),
