@@ -15,6 +15,39 @@ function spawnScript(scriptFile: string, args: string[] = []) {
   });
 }
 
+async function clearStaleRunningJobs() {
+  // If a scrape process crashes or hangs, jobs can be left in RUNNING forever.
+  // Auto-fail stale RUNNING jobs so the worker can continue processing the queue.
+  const staleMs = 1000 * 60 * 20; // 20 minutes
+  const cutoff = new Date(Date.now() - staleMs);
+
+  const stale = await prisma.scrapeJob.findMany({
+    where: {
+      status: "RUNNING",
+      startedAt: { lt: cutoff },
+      completedAt: null,
+    },
+    select: { id: true },
+    take: 20,
+  });
+
+  if (stale.length === 0) return;
+
+  console.error(`[worker] found stale RUNNING jobs=${stale.length}, marking FAILED`);
+  for (const job of stale) {
+    await prisma.scrapeJob
+      .update({
+        where: { id: job.id },
+        data: {
+          status: "FAILED",
+          errorMessage: "stale RUNNING job auto-failed by worker (timeout)",
+          completedAt: new Date(),
+        },
+      })
+      .catch(() => undefined);
+  }
+}
+
 async function maybeRefreshCafes() {
   const intervalMs = 1000 * 60 * 60; // 1 hour
   const now = Date.now();
@@ -27,6 +60,10 @@ async function maybeRefreshCafes() {
 }
 
 async function tick() {
+  await clearStaleRunningJobs().catch((error) => {
+    console.error("[worker] clear stale jobs failed", error);
+  });
+
   await maybeRefreshCafes().catch((error) => {
     console.error("[worker] refresh cafes failed", error);
   });
