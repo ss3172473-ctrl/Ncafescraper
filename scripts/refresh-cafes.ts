@@ -65,10 +65,23 @@ async function fetchJoinedCafes(storageState: any): Promise<JoinedCafe[]> {
 
     for (const target of candidatePages) {
       await page.goto(target, { waitUntil: "domcontentloaded", timeout: 30000 });
-      await page.waitForTimeout(1500);
+      await page.waitForLoadState("networkidle", { timeout: 20000 }).catch(() => undefined);
+      await page.waitForTimeout(3500);
 
       if (page.url().includes("nidlogin")) {
         throw new Error("네이버 세션이 만료되었습니다. 대시보드에서 storageState를 다시 업로드하세요.");
+      }
+
+      // On the section home, the joined cafe list is sometimes behind a tab/menu.
+      // Try a few "내 카페/가입" buttons to reveal the list.
+      const revealCandidates = await page
+        .locator("a, button")
+        .filter({ hasText: /내\s*카페|가입|내\s*카페\s*목록|내\s*카페\s*리스트/i })
+        .all()
+        .catch(() => []);
+      for (let i = 0; i < Math.min(3, revealCandidates.length); i += 1) {
+        await revealCandidates[i].click({ timeout: 1500 }).catch(() => undefined);
+        await page.waitForTimeout(1200);
       }
 
       const anchors = await page.$$eval("a", (elements) =>
