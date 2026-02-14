@@ -31,7 +31,7 @@ type ParsedPost = {
   likeCount: number;
   commentCount: number;
   contentText: string;
-  rawHtml: string;
+  rawHtml: string | null;
   comments: ParsedComment[];
 };
 
@@ -419,8 +419,9 @@ async function parsePost(page: Page, sourceUrl: string, cafeId: string, cafeName
 
   const contentText = pageText;
   console.log(`[parse] extracted text len=${contentText.length}`);
-  console.log("[parse] extracting body innerHTML");
-  const rawHtml = await withTimeout(frame.locator("body").innerHTML(), 20000, "body innerHTML");
+  // User-requested mode: only archive visible text. HTML extraction is slow/flaky on Naver Cafe PC and
+  // can cause timeouts; skip it to improve reliability.
+  const rawHtml: string | null = null;
 
   const authorName =
     (await frame.locator(".nickname, .nick, .author, .name").first().textContent().catch(() => null))?.trim() ||
