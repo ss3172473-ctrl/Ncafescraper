@@ -233,6 +233,13 @@ function getQueryParam(url: string, key: string): string | null {
   }
 }
 
+function getArticleIdFromUrl(url: string): string | null {
+  const q = getQueryParam(url, "articleid");
+  if (q) return q;
+  const m = String(url || "").match(/\/articles\/(\d+)/i);
+  return m?.[1] || null;
+}
+
 async function getClubId(page: Page, cafeId: string): Promise<string> {
   // If the "cafeId" is already numeric, treat it as clubId.
   if (/^\d+$/.test(cafeId)) {
@@ -298,10 +305,10 @@ async function fetchCandidatesFromSearchApi(
     rows.push({
       articleId: Number(item.articleId),
       url:
-        // Open desktop article read page (cafe_main frame) to allow easy full-text copy behavior.
-        `https://cafe.naver.com/ArticleRead.nhn?clubid=${encodeURIComponent(cafeNumericId)}` +
-        `&articleid=${encodeURIComponent(String(item.articleId))}` +
-        `&boardtype=${encodeURIComponent(item.boardType || "L")}`,
+        // Prefer the newer PC article URL format (reduces iframe/wrapper issues).
+        `https://cafe.naver.com/ca-fe/cafes/${encodeURIComponent(cafeNumericId)}` +
+        `/articles/${encodeURIComponent(String(item.articleId))}` +
+        `?boardType=${encodeURIComponent(item.boardType || "L")}`,
       subject: String(item.subject || ""),
       readCount: Number(item.readCount || 0),
       commentCount: Number(item.commentCount || 0),
@@ -361,7 +368,7 @@ async function parsePost(page: Page, sourceUrl: string, cafeId: string, cafeName
   }
 
   // Prefer the real ArticleRead iframe (본문이 들어있는 프레임). Outer wrapper pages often contain menus/lists.
-  const expectedArticleId = getQueryParam(sourceUrl, "articleid");
+  const expectedArticleId = getArticleIdFromUrl(sourceUrl);
   let frame: Frame | Page = page;
   if (expectedArticleId) {
     const match = page
