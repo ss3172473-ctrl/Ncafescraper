@@ -16,6 +16,15 @@ function parseCommaList(input: unknown): string[] {
     .filter(Boolean);
 }
 
+function parseUrlLines(input: unknown): string[] {
+  const raw = String(input || "");
+  if (!raw.trim()) return [];
+  return raw
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+}
+
 export async function GET() {
   const user = await getCurrentUser();
   if (!user) {
@@ -46,6 +55,7 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
 
     const keywords = parseCommaList(body?.keywords);
+    const directUrls = parseUrlLines(body?.directUrls);
     const selectedCafes = Array.isArray(body?.selectedCafes)
       ? body.selectedCafes
       : [];
@@ -58,9 +68,9 @@ export async function POST(request: NextRequest) {
       .map((item: { name?: string }) => String(item?.name || "").trim())
       .filter(Boolean);
 
-    if (keywords.length === 0) {
+    if (keywords.length === 0 && directUrls.length === 0) {
       return NextResponse.json(
-        { success: false, error: "키워드를 1개 이상 입력하세요. 쉼표(,)로 구분합니다." },
+        { success: false, error: "키워드(쉼표 구분) 또는 직접 URL(줄바꿈)을 1개 이상 입력하세요." },
         { status: 400 }
       );
     }
@@ -110,6 +120,7 @@ export async function POST(request: NextRequest) {
         createdBy: user.username,
         status: "QUEUED",
         keywords: JSON.stringify(keywords),
+        directUrls: directUrls.length ? JSON.stringify(directUrls) : null,
         includeWords: JSON.stringify(includeKeywords),
         excludeWords: JSON.stringify(excludeKeywords),
         fromDate,

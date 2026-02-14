@@ -53,6 +53,7 @@ export default function DashboardPage() {
   const [jobsLoading, setJobsLoading] = useState(true);
 
   const [keywords, setKeywords] = useState("");
+  const [directUrlsText, setDirectUrlsText] = useState("");
   const [includeKeywordsText, setIncludeKeywordsText] = useState("");
   const [excludeKeywordsText, setExcludeKeywordsText] = useState("");
   const [datePreset, setDatePreset] = useState<"1m" | "3m" | "6m" | "1y" | "2y" | "all">("3m");
@@ -70,6 +71,14 @@ export default function DashboardPage() {
       .filter(Boolean);
     return list.length;
   }, [keywords]);
+
+  const directUrlCount = useMemo(() => {
+    const list = directUrlsText
+      .split(/\r?\n/)
+      .map((v) => v.trim())
+      .filter(Boolean);
+    return list.length;
+  }, [directUrlsText]);
 
   const recommendedMaxPosts = useMemo(() => {
     // Practical default: keep jobs reasonably small to avoid timeouts / rate-limit.
@@ -220,8 +229,8 @@ export default function DashboardPage() {
   };
 
   const handleCreateJob = async () => {
-    if (!keywords.trim()) {
-      alert("키워드를 입력하세요. 예: 공구,미개봉,할인");
+    if (!keywords.trim() && !directUrlsText.trim()) {
+      alert("키워드(쉼표 구분) 또는 직접 URL(줄바꿈)을 입력하세요.");
       return;
     }
     if (selectedCafes.length === 0) {
@@ -237,6 +246,7 @@ export default function DashboardPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           keywords,
+          directUrls: directUrlsText,
           includeKeywords: includeKeywordsText.split(",").map((v) => v.trim()).filter(Boolean),
           excludeKeywords: excludeKeywordsText.split(",").map((v) => v.trim()).filter(Boolean),
           fromDate,
@@ -358,6 +368,17 @@ export default function DashboardPage() {
                 placeholder="공구,미개봉,한정판"
               />
               <div className="mt-1 text-xs text-slate-600">키워드 개수: {keywordCount}개</div>
+            </div>
+
+            <div className="md:col-span-2">
+              <label className="text-sm text-slate-700">직접 URL 목록 (줄바꿈 구분, 선택)</label>
+              <textarea
+                value={directUrlsText}
+                onChange={(e) => setDirectUrlsText(e.target.value)}
+                className="w-full mt-1 px-3 py-2 border border-slate-300 rounded-lg min-h-[88px] font-mono text-xs"
+                placeholder={"예)\nhttps://cafe.naver.com/ArticleRead.nhn?clubid=...&articleid=...\nhttps://cafe.naver.com/ca-fe/cafes/.../articles/..."}
+              />
+              <div className="mt-1 text-xs text-slate-600">URL 개수: {directUrlCount}개 (입력 시 검색 대신 이 URL만 스크랩)</div>
             </div>
 
             <div>

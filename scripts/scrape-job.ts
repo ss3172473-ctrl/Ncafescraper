@@ -136,6 +136,38 @@ function looksLikeJoinWall(text: string): boolean {
   return flags.some((f) => t.includes(f));
 }
 
+function looksLikePermissionWall(text: string): boolean {
+  const t = text.replace(/\s+/g, " ");
+  const flags = [
+    "등급이 되시면 읽기가 가능한 게시판",
+    "등업에 관련된",
+    "등업 신청",
+    "등급이시며",
+    "카페의 멤버 등급",
+    "자동등업",
+  ];
+  const hit = flags.filter((f) => t.includes(f)).length;
+  return hit >= 2;
+}
+
+function looksLikeProfileOrPostList(text: string): boolean {
+  const t = text.replace(/\s+/g, " ");
+  const flags = [
+    "이주의 인기멤버",
+    "방문",
+    "작성글",
+    "구독멤버",
+    "작성글 댓글단 글",
+    "게시물 목록",
+    "제목",
+    "작성일",
+    "페이징 이동",
+    "글쓰기",
+  ];
+  const hit = flags.filter((f) => t.includes(f)).length;
+  return hit >= 4;
+}
+
 function cleanCafeText(text: string): string {
   const lines = text
     .split("\n")
@@ -150,6 +182,10 @@ function cleanCafeText(text: string): string {
     "10초 만에 가입하기",
     "멤버와 함께하는",
     "최근 일주일 동안",
+    "이주의 인기멤버",
+    "작성글 댓글단 글",
+    "게시물 목록",
+    "페이징 이동",
   ];
 
   const dropExact = new Set([
@@ -165,6 +201,7 @@ function cleanCafeText(text: string): string {
     "댓글",
     "전체글",
     "전체서비스",
+    "글쓰기",
   ]);
 
   const cleaned = lines.filter((l) => {
@@ -237,7 +274,13 @@ async function waitForCafeMainFrame(page: Page, ms: number): Promise<Frame | nul
   const start = Date.now();
   while (Date.now() - start < ms) {
     const f = page.frame({ name: "cafe_main" }) || page.frame({ name: "mainFrame" }) || null;
-    if (f) return f;
+    if (f) {
+      const url = String(f.url?.() || "");
+      if (url && url !== "about:blank") return f;
+      // Sometimes the frame exists early with about:blank. Wait until it actually contains article DOM.
+      const hasContent = await f.locator("div.se-main-container, div.article_viewer").count().catch(() => 0);
+      if (hasContent > 0) return f;
+    }
     await sleep(150);
   }
   return null;
@@ -285,6 +328,122 @@ async function extractBestText(target: Frame | Page): Promise<string> {
   return pageText;
 }
 
+async function extractPostBodyText(target: Frame | Page): Promise<string> {
+  // Try to focus on actual post body containers first.
+  // Return raw visible text (no heavy cleaning) so the user gets "what they can see" for archiving.
+  await (target as any)
+    .waitForSelector("div.se-main-container, div.article_viewer, #tbody", { timeout: 15000 })
+    .catch(() => undefined);
+
+  const selectors = [
+    "div.se-main-container",
+    "div.se-viewer",
+    "div.article_viewer",
+    "div.ContentRenderer",
+    "#tbody",
+  ];
+
+  for (const sel of selectors) {
+    try {
+      const loc = (target as any).locator(sel);
+      const count = await loc.count().catch(() => 0);
+      if (count === 0) continue;
+
+      // Some pages may render multiple matching nodes (hidden/duplicated). Pick the best candidate.
+      let best = "";
+      const take = Math.min(count, 4);
+      for (let i = 0; i < take; i += 1) {
+        const txt = String(
+          await withTimeout(loc.nth(i).innerText(), 20000, `body innerText ${sel}#${i}`)
+        ).trim();
+        if (!txt) continue;
+        if (looksLikePermissionWall(txt)) continue;
+        if (looksLikeProfileOrPostList(txt)) continue;
+        if (txt.length > best.length) best = txt;
+      }
+
+      if (best) return best;
+    } catch {
+      // ignore
+    }
+  }
+
+  return "";
+}
+
+async function extractCommentsText(target: Frame | Page): Promise<string> {
+  // Scroll to the bottom to trigger comment rendering/lazy-load.
+  await (target as any)
+    .evaluate(() => window.scrollTo(0, document.body.scrollHeight))
+    .catch(() => undefined);
+  await sleep(600);
+
+  // Some pages require opening the comments panel, but on others this button toggles the panel.
+  // Click only if we don't already see comment items.
+  await (target as any)
+    .waitForSelector(".CommentBox, .comment_list, .CommentItem", { timeout: 12000 })
+    .catch(() => undefined);
+
+  const initialItems = await (target as any)
+    .locator(".CommentItem, li.CommentItem")
+    .count()
+    .catch(() => 0);
+  if (initialItems === 0) {
+    await (target as any)
+      .locator("button.button_comment, a.button_comment")
+      .first()
+      .click({ timeout: 1200 })
+      .catch(() => undefined);
+    await sleep(400);
+    await (target as any)
+      .waitForSelector(".CommentItem, li.CommentItem", { timeout: 12000 })
+      .catch(() => undefined);
+  }
+
+  const commentRoot = (target as any).locator(".CommentBox, .comment_list").first();
+  const hasRoot = (await commentRoot.count().catch(() => 0)) > 0;
+  const scope = hasRoot ? commentRoot : (target as any);
+
+  // Expand comment "더보기" buttons if present.
+  const expandRegex = /댓글\s*더보기|이전\s*댓글|더보기|more/i;
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    const btn = scope
+      .locator("button, a, span")
+      .filter({ hasText: expandRegex })
+      .first();
+    const count = await btn.count().catch(() => 0);
+    if (count === 0) break;
+    await btn.click({ timeout: 1500 }).catch(() => undefined);
+    await sleep(250);
+  }
+
+  const itemSelectors = [
+    ".CommentItem",
+    "li.CommentItem",
+    "[class*='CommentItem']",
+    "li[class*='comment']",
+  ];
+
+  for (const sel of itemSelectors) {
+    const items = (target as any).locator(sel);
+    const n = await items.count().catch(() => 0);
+    if (n <= 0) continue;
+    const take = Math.min(n, 200);
+    const parts: string[] = [];
+    for (let i = 0; i < take; i += 1) {
+      const item = items.nth(i);
+      const raw =
+        String(await item.locator(".text_comment, .comment_text_view").first().innerText().catch(() => "")).trim() ||
+        String(await item.innerText().catch(() => "")).trim();
+      if (raw) parts.push(raw);
+    }
+    const joined = parts.join("\n\n").trim();
+    if (joined.length >= 10) return joined;
+  }
+
+  return "";
+}
+
 function getQueryParam(url: string, key: string): string | null {
   try {
     const u = new URL(url);
@@ -298,6 +457,13 @@ function getArticleIdFromUrl(url: string): string | null {
   const q = getQueryParam(url, "articleid");
   if (q) return q;
   const m = String(url || "").match(/\/articles\/(\d+)/i);
+  return m?.[1] || null;
+}
+
+function getClubIdFromUrl(url: string): string | null {
+  const q = getQueryParam(url, "clubid") || getQueryParam(url, "cafeId");
+  if (q) return q;
+  const m = String(url || "").match(/\/cafes\/(\d+)/i);
   return m?.[1] || null;
 }
 
@@ -503,13 +669,47 @@ async function parsePost(
     await sleep(400);
   }
 
-  console.log("[parse] extracting post text (PC selectors first)");
-  const pageText = (await extractBestText(frame)).trim();
-  if (!pageText) return null;
-  if (looksLikeJoinWall(pageText)) return null;
+  // Always scroll to ensure article body/comments are rendered before extraction.
+  await frame
+    .evaluate(() => {
+      window.scrollTo(0, document.body.scrollHeight);
+    })
+    .catch(() => undefined);
+  await sleep(800);
 
-  const contentText = pageText;
-  console.log(`[parse] extracted text len=${contentText.length}`);
+  console.log("[parse] extracting post body/comments text");
+  const bodyTextRaw = await extractPostBodyText(frame);
+  const bodyText = String(bodyTextRaw || "").trim();
+  let commentsTextRaw = await extractCommentsText(frame);
+  let commentsText = String(commentsTextRaw || "").trim();
+
+  // Comments sometimes appear only on the newer FE article URL.
+  // If we couldn't see comments, retry on /ca-fe/cafes/{clubid}/articles/{articleid}.
+  if (!commentsText && expectedArticleId && cafeNumericId) {
+    const feUrl =
+      `https://cafe.naver.com/ca-fe/cafes/${encodeURIComponent(cafeNumericId)}` +
+      `/articles/${encodeURIComponent(expectedArticleId)}`;
+    if (!page.url().includes(`/cafes/${cafeNumericId}/articles/${expectedArticleId}`)) {
+      console.log(`[parse] retrying comments via FE url: ${feUrl}`);
+      await withTimeout(page.goto(feUrl, { waitUntil: "domcontentloaded", timeout: 35000 }), 45000, "page.goto feUrl")
+        .catch(() => undefined);
+      await sleep(1200);
+      console.log(`[parse] FE loaded url=${page.url()}`);
+    }
+    commentsTextRaw = await extractCommentsText(page);
+    commentsText = String(commentsTextRaw || "").trim();
+  }
+
+  const joinedForChecks = `${bodyText}\n${commentsText}`.trim();
+  if (!joinedForChecks) return null;
+  if (looksLikeJoinWall(joinedForChecks)) return null;
+  if (looksLikePermissionWall(joinedForChecks)) return null;
+  if (looksLikeProfileOrPostList(joinedForChecks) && !commentsText) return null;
+
+  const contentText = commentsText ? `${bodyText}\n\n[댓글]\n${commentsText}`.trim() : bodyText;
+  console.log(
+    `[parse] extracted body len=${bodyText.length} comments len=${commentsText.length} total len=${contentText.length}`
+  );
   // User-requested mode: only archive visible text. HTML extraction is slow/flaky on Naver Cafe PC and
   // can cause timeouts; skip it to improve reliability.
   const rawHtml: string | null = null;
@@ -518,7 +718,7 @@ async function parsePost(
   const authorName = "";
   const publishedAt = null;
 
-  // User request: store only post page full text. Do not parse/store comments in Sheets.
+  // We store combined text in contentText (body + comments) for Sheets.
   const comments: ParsedComment[] = [];
 
   return {
@@ -590,6 +790,7 @@ async function run(jobId: string) {
   });
 
   const keywords = JSON.parse(job.keywords || "[]") as string[];
+  const directUrls = JSON.parse(job.directUrls || "[]") as string[];
   const includeWords = JSON.parse(job.includeWords || "[]") as string[];
   const excludeWords = JSON.parse(job.excludeWords || "[]") as string[];
   const cafeIds = JSON.parse(job.cafeIds || "[]") as string[];
@@ -612,68 +813,81 @@ async function run(jobId: string) {
   const collected: ParsedPost[] = [];
 
   try {
-    for (let i = 0; i < cafeIds.length; i += 1) {
-      const cafeId = cafeIds[i];
-      const cafeName = cafeNames[i] || cafeId;
-
-      const alreadyEnough = collected.length >= job.maxPosts;
-      const { cafeNumericId, candidates } = await collectArticleCandidates(
-        page,
-        cafeId,
-        keywords,
-        // Candidate cap per cafe (keep stable even with many keywords).
-        alreadyEnough ? 1 : Math.min(200, Math.max(40, Math.ceil(job.maxPosts * 4)))
-      );
-
-      // Requirement: search each keyword once per selected cafe.
-      // Even if we've already collected enough posts, we still execute the keyword search pass above.
-      if (alreadyEnough) {
-        console.log(`[run] maxPosts reached; skipping parse for cafe=${cafeId} (search pass done)`);
-        continue;
-      }
-
-      for (const cand of candidates) {
+    if (Array.isArray(directUrls) && directUrls.length > 0) {
+      console.log(`[run] directUrls mode urls=${directUrls.length}`);
+      for (const url of directUrls) {
         if (collected.length >= job.maxPosts) break;
-
-        // Fast date filter from search API (more reliable than DOM parsing).
-        if (job.fromDate && cand.addedAt && cand.addedAt < job.fromDate) continue;
-        if (job.toDate && cand.addedAt && cand.addedAt > job.toDate) continue;
-
-        // Early filter by counts from list API (fast).
-        if (job.minViewCount !== null && cand.readCount < job.minViewCount) continue;
-        if (job.minCommentCount !== null && cand.commentCount < job.minCommentCount) continue;
-
+        const clubid = getClubIdFromUrl(url) || "";
         const parsed = await withTimeout(
-          parsePost(page, cand.url, cafeId, cafeNumericId, cafeName, cand.subject),
+          parsePost(page, url, clubid || "direct", clubid || "direct", clubid || "direct", ""),
           90000,
           "parsePost overall"
         ).catch(() => null);
         if (!parsed) continue;
-
-        // Use counts from the search API list (more reliable than page text parsing).
-        parsed.viewCount = cand.readCount;
-        parsed.likeCount = cand.likeCount;
-        parsed.commentCount = cand.commentCount;
-        parsed.publishedAt = cand.addedAt;
-
-        // Candidate list already comes from Naver's keyword search API.
-        // Re-checking keywords against parsed DOM text can incorrectly drop valid results
-        // (e.g., when the extracted title is missing or UI text dominates).
-        // Keep include/exclude word filters only.
-        if (!parsed.title || parsed.title.trim().length < 2) {
-          parsed.title = cand.subject || parsed.title;
-        }
-
-        const normalizedForFilter = `${cand.subject}\n${parsed.title}\n${parsed.contentText}`;
+        const normalizedForFilter = `${parsed.title}\n${parsed.contentText}`;
         if (!isAllowedByWords(normalizedForFilter, includeWords, excludeWords)) {
           continue;
         }
-
-        if (job.fromDate && parsed.publishedAt && parsed.publishedAt < job.fromDate) continue;
-        if (job.toDate && parsed.publishedAt && parsed.publishedAt > job.toDate) continue;
-
         collected.push(parsed);
         await sleep(900 + Math.floor(Math.random() * 600));
+      }
+    } else {
+      for (let i = 0; i < cafeIds.length; i += 1) {
+        const cafeId = cafeIds[i];
+        const cafeName = cafeNames[i] || cafeId;
+
+        const alreadyEnough = collected.length >= job.maxPosts;
+        const { cafeNumericId, candidates } = await collectArticleCandidates(
+          page,
+          cafeId,
+          keywords,
+          // Candidate cap per cafe (keep stable even with many keywords).
+          alreadyEnough ? 1 : Math.min(200, Math.max(40, Math.ceil(job.maxPosts * 4)))
+        );
+
+        // Requirement: search each keyword once per selected cafe.
+        // Even if we've already collected enough posts, we still execute the keyword search pass above.
+        if (alreadyEnough) {
+          console.log(`[run] maxPosts reached; skipping parse for cafe=${cafeId} (search pass done)`);
+          continue;
+        }
+
+        for (const cand of candidates) {
+          if (collected.length >= job.maxPosts) break;
+
+          // Fast date filter from search API (more reliable than DOM parsing).
+          if (job.fromDate && cand.addedAt && cand.addedAt < job.fromDate) continue;
+          if (job.toDate && cand.addedAt && cand.addedAt > job.toDate) continue;
+
+          // Early filter by counts from list API (fast).
+          if (job.minViewCount !== null && cand.readCount < job.minViewCount) continue;
+          if (job.minCommentCount !== null && cand.commentCount < job.minCommentCount) continue;
+
+          const parsed = await withTimeout(
+            parsePost(page, cand.url, cafeId, cafeNumericId, cafeName, cand.subject),
+            90000,
+            "parsePost overall"
+          ).catch(() => null);
+          if (!parsed) continue;
+
+          // Use counts from the search API list (more reliable than page text parsing).
+          parsed.viewCount = cand.readCount;
+          parsed.likeCount = cand.likeCount;
+          parsed.commentCount = cand.commentCount;
+          parsed.publishedAt = cand.addedAt;
+
+          if (!parsed.title || parsed.title.trim().length < 2) {
+            parsed.title = cand.subject || parsed.title;
+          }
+
+          const normalizedForFilter = `${cand.subject}\n${parsed.title}\n${parsed.contentText}`;
+          if (!isAllowedByWords(normalizedForFilter, includeWords, excludeWords)) {
+            continue;
+          }
+
+          collected.push(parsed);
+          await sleep(900 + Math.floor(Math.random() * 600));
+        }
       }
     }
   } finally {
@@ -720,16 +934,23 @@ async function run(jobId: string) {
   const commentRows = [] as Array<any>;
 
   for (const post of finalPosts) {
-    // Dedupe by URL first (more reliable than "all-page text" hashing, which can be UI-heavy).
-    const existedByUrl = await prisma.scrapePost.findFirst({ where: { sourceUrl: post.sourceUrl } });
-    if (existedByUrl) {
-      console.log(`[save] skip (existing url) ${post.sourceUrl}`);
-      continue;
-    }
-
     // Also keep a content hash for reference/secondary dedupe, but include URL to avoid false positives
     // when multiple posts share similar UI boilerplate text.
     const hash = contentHash(`${post.sourceUrl}\n${post.contentText}`);
+
+    // Dedupe by (url + content). If the same URL was scraped before but content differs
+    // (e.g., improved extraction or post updated), allow inserting a new row.
+    const existedByHash = await prisma.scrapePost.findUnique({ where: { contentHash: hash } });
+    if (existedByHash) {
+      console.log(`[save] skip (existing hash) ${post.sourceUrl}`);
+      continue;
+    }
+    const existedByUrl = await prisma.scrapePost.findFirst({ where: { sourceUrl: post.sourceUrl } });
+    if (existedByUrl && existedByUrl.contentHash === hash) {
+      console.log(`[save] skip (existing url+hash) ${post.sourceUrl}`);
+      continue;
+    }
+
     console.log(`[save] creating post hash=${hash.slice(0, 10)} len=${post.contentText.length}`);
 
     const created = await prisma.scrapePost.create({
