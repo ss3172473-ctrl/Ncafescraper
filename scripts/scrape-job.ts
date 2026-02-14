@@ -224,6 +224,66 @@ function getArticleFrame(page: Page): Frame | Page {
   );
 }
 
+function isProbablyCafeMenuUrl(url: string): boolean {
+  const u = String(url || "");
+  // Examples:
+  // https://cafe.naver.com/f-e/cafes/<id>/menus/0?... (내소식/메뉴 등)
+  // https://cafe.naver.com/ca-fe/cafes/<id>/menus/...
+  return /\/menus\//i.test(u) || /\/mycafe/i.test(u) || /\/mynews/i.test(u);
+}
+
+async function waitForCafeMainFrame(page: Page, ms: number): Promise<Frame | null> {
+  const start = Date.now();
+  while (Date.now() - start < ms) {
+    const f = page.frame({ name: "cafe_main" }) || page.frame({ name: "mainFrame" }) || null;
+    if (f) return f;
+    await sleep(150);
+  }
+  return null;
+}
+
+async function extractBestText(target: Frame | Page): Promise<string> {
+  // Prefer known post body containers (PC web). We still fall back to body.innerText if selectors fail.
+  const selectors = [
+    // SmartEditor 3
+    "div.se-main-container",
+    "div.se-viewer",
+    // Legacy / other renderers
+    "div.article_viewer",
+    "div.ContentRenderer",
+    "div.ArticleContentBox",
+    "#tbody",
+    // Last resort but still inside the document
+    "article",
+  ];
+
+  // Wait briefly for any plausible content node to appear.
+  await (target as any)
+    .waitForSelector(selectors.join(", "), { timeout: 15000 })
+    .catch(() => undefined);
+
+  let best = "";
+  for (const sel of selectors) {
+    try {
+      const loc = (target as any).locator(sel).first();
+      const count = await loc.count().catch(() => 0);
+      if (count === 0) continue;
+      const txt = String(await withTimeout(loc.innerText(), 15000, `innerText ${sel}`)).trim();
+      if (txt.length > best.length) best = txt;
+    } catch {
+      // ignore
+    }
+  }
+
+  if (best.trim().length >= 30) return best.trim();
+
+  // Fallback: whole document text (may include UI if we failed to locate the article container).
+  const pageText = String(
+    await withTimeout((target as any).locator("body").innerText(), 25000, "body innerText")
+  ).trim();
+  return pageText;
+}
+
 function getQueryParam(url: string, key: string): string | null {
   try {
     const u = new URL(url);
@@ -305,10 +365,10 @@ async function fetchCandidatesFromSearchApi(
     rows.push({
       articleId: Number(item.articleId),
       url:
-        // Prefer the newer PC article URL format (reduces iframe/wrapper issues).
-        `https://cafe.naver.com/ca-fe/cafes/${encodeURIComponent(cafeNumericId)}` +
-        `/articles/${encodeURIComponent(String(item.articleId))}` +
-        `?boardType=${encodeURIComponent(item.boardType || "L")}`,
+        // PC article read URL is the most reliable for extracting 본문 text (it uses the cafe_main frame).
+        `https://cafe.naver.com/ArticleRead.nhn` +
+        `?clubid=${encodeURIComponent(cafeNumericId)}` +
+        `&articleid=${encodeURIComponent(String(item.articleId))}`,
       subject: String(item.subject || ""),
       readCount: Number(item.readCount || 0),
       commentCount: Number(item.commentCount || 0),
@@ -357,26 +417,40 @@ async function parsePost(
   page: Page,
   sourceUrl: string,
   cafeId: string,
+  cafeNumericId: string,
   cafeName: string,
   fallbackTitle: string
 ): Promise<ParsedPost | null> {
   console.log(`[parse] ${sourceUrl}`);
-  await withTimeout(
-    page.goto(sourceUrl, { waitUntil: "domcontentloaded", timeout: 35000 }),
-    45000,
-    "page.goto"
-  );
+  const canonicalUrl = sourceUrl;
+
+  await withTimeout(page.goto(canonicalUrl, { waitUntil: "domcontentloaded", timeout: 35000 }), 45000, "page.goto");
   await sleep(1200);
   console.log(`[parse] loaded url=${page.url()}`);
+
+  // If we landed on a menu/wrapper page, force the canonical ArticleRead URL.
+  const expectedArticleId = getArticleIdFromUrl(canonicalUrl);
+  if (expectedArticleId && isProbablyCafeMenuUrl(page.url())) {
+    const forced =
+      `https://cafe.naver.com/ArticleRead.nhn?clubid=${encodeURIComponent(cafeNumericId)}` +
+      `&articleid=${encodeURIComponent(expectedArticleId)}`;
+    console.log(`[parse] redirected to menu; forcing ArticleRead: ${forced}`);
+    await withTimeout(page.goto(forced, { waitUntil: "domcontentloaded", timeout: 35000 }), 45000, "page.goto forced");
+    await sleep(1200);
+    console.log(`[parse] forced loaded url=${page.url()}`);
+  }
 
   if (page.url().includes("nidlogin")) {
     throw new Error("네이버 로그인 세션이 만료되었습니다.");
   }
 
-  // Prefer the real ArticleRead iframe (본문이 들어있는 프레임). Outer wrapper pages often contain menus/lists.
-  const expectedArticleId = getArticleIdFromUrl(sourceUrl);
+  // Prefer the real cafe_main frame (PC 본문이 들어있는 프레임).
   let frame: Frame | Page = page;
-  if (expectedArticleId) {
+  const cafeMain = await waitForCafeMainFrame(page, 8000);
+  if (cafeMain) {
+    frame = cafeMain;
+    console.log(`[parse] using cafe_main frame url=${cafeMain.url()}`);
+  } else if (expectedArticleId) {
     const match = page
       .frames()
       .find((f) => f.url().includes("ArticleRead") && f.url().includes(`articleid=${expectedArticleId}`));
@@ -384,15 +458,8 @@ async function parsePost(
       frame = match;
       console.log(`[parse] using ArticleRead frame url=${match.url()}`);
     } else {
-      // Some pages encode the ArticleRead URL; try looser match.
-      const loose = page.frames().find((f) => f.url().includes(`articleid=${expectedArticleId}`));
-      if (loose) {
-        frame = loose;
-        console.log(`[parse] using loose articleid frame url=${loose.url()}`);
-      } else {
-        frame = getArticleFrame(page);
-        console.log("[parse] ArticleRead frame not found; fallback to heuristic frame");
-      }
+      frame = getArticleFrame(page);
+      console.log("[parse] cafe_main not found; using heuristic frame");
     }
   } else {
     frame = getArticleFrame(page);
@@ -425,8 +492,8 @@ async function parsePost(
     await sleep(400);
   }
 
-  console.log("[parse] extracting body innerText");
-  const pageText = (await withTimeout(frame.locator("body").innerText(), 25000, "body innerText")).trim();
+  console.log("[parse] extracting post text (PC selectors first)");
+  const pageText = (await extractBestText(frame)).trim();
   if (!pageText) return null;
   if (looksLikeJoinWall(pageText)) return null;
 
@@ -444,7 +511,8 @@ async function parsePost(
   const comments: ParsedComment[] = [];
 
   return {
-    sourceUrl: page.url(),
+    // Keep the canonical post link (do not store redirected menu URLs).
+    sourceUrl: canonicalUrl,
     cafeId,
     cafeName,
     cafeUrl: getCafeUrl(cafeId),
@@ -537,7 +605,7 @@ async function run(jobId: string) {
       const cafeId = cafeIds[i];
       const cafeName = cafeNames[i] || cafeId;
 
-      const { candidates } = await collectArticleCandidates(
+      const { cafeNumericId, candidates } = await collectArticleCandidates(
         page,
         cafeId,
         keywords,
@@ -552,7 +620,7 @@ async function run(jobId: string) {
         if (job.minCommentCount !== null && cand.commentCount < job.minCommentCount) continue;
 
         const parsed = await withTimeout(
-          parsePost(page, cand.url, cafeId, cafeName, cand.subject),
+          parsePost(page, cand.url, cafeId, cafeNumericId, cafeName, cand.subject),
           90000,
           "parsePost overall"
         ).catch(() => null);
