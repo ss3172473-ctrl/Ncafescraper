@@ -39,11 +39,21 @@ async function heartbeat(status: string, extra: Record<string, unknown> = {}) {
 
 function spawnScript(scriptFile: string, args: string[] = []) {
   const scriptPath = path.join(process.cwd(), "scripts", scriptFile);
-  return spawn("npx", ["ts-node", "--project", "tsconfig.scripts.json", scriptPath, ...args], {
+  const child = spawn("npx", ["ts-node", "--project", "tsconfig.scripts.json", scriptPath, ...args], {
     cwd: process.cwd(),
-    stdio: "inherit",
+    env: process.env,
     shell: true,
   });
+
+  child.stdout?.on("data", (data) => {
+    process.stdout.write(`[child:${scriptFile}] ${data}`);
+  });
+
+  child.stderr?.on("data", (data) => {
+    process.stderr.write(`[child:${scriptFile}:err] ${data}`);
+  });
+
+  return child;
 }
 
 async function clearStaleRunningJobs() {
