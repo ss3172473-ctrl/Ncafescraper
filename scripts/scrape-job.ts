@@ -219,67 +219,72 @@ function makeProgressPairKey(cafeId: string, keyword: string): string {
   return `${safeCafe}::${safeKeyword}`;
 }
 
+// Serialize DB updates to prevent race conditions on the "value" JSON field
+const dbLimit = pLimit(1);
+
 async function setJobProgress(
   jobId: string,
   patch: Partial<JobProgress>,
   pairOrPairs?: KeywordProgressPatch | KeywordProgressPatch[] | null
 ) {
-  const key = progressKey(jobId);
-  const now = new Date().toISOString();
-  let previous: JobProgress = {
-    updatedAt: now,
-    stage: "RUNNING",
-  };
+  return dbLimit(async () => {
+    const key = progressKey(jobId);
+    const now = new Date().toISOString();
+    let previous: JobProgress = {
+      updatedAt: now,
+      stage: "RUNNING",
+    };
 
-  try {
-    const row = await prisma.setting.findUnique({ where: { key } });
-    if (row?.value) {
-      const parsed = JSON.parse(row.value);
-      if (parsed && typeof parsed === "object") {
-        previous = parsed as JobProgress;
+    try {
+      const row = await prisma.setting.findUnique({ where: { key } });
+      if (row?.value) {
+        const parsed = JSON.parse(row.value);
+        if (parsed && typeof parsed === "object") {
+          previous = parsed as JobProgress;
+        }
       }
+    } catch {
+      // ignore
     }
-  } catch {
-    // ignore
-  }
 
-  const next: JobProgress = {
-    ...previous,
-    ...patch,
-    stage: patch.stage || previous.stage || "RUNNING",
-    updatedAt: now,
-  };
-
-  const matrix = { ...(next.keywordMatrix || {}) };
-  const pairs = pairOrPairs
-    ? Array.isArray(pairOrPairs)
-      ? pairOrPairs
-      : [pairOrPairs]
-    : [];
-
-  for (const pair of pairs) {
-    if (!pair?.cafeId || !pair.keyword) continue;
-    const pairKey = makeProgressPairKey(pair.cafeId, pair.keyword);
-    const existingCell = matrix[pairKey] || {};
-    matrix[pairKey] = {
-      ...existingCell,
-      ...pair,
-      cafeId: pair.cafeId || existingCell.cafeId || "",
-      cafeName: pair.cafeName || existingCell.cafeName || pair.cafeId,
-      keyword: pair.keyword || existingCell.keyword || "",
+    const next: JobProgress = {
+      ...previous,
+      ...patch,
+      stage: patch.stage || previous.stage || "RUNNING",
       updatedAt: now,
     };
-    next.keywordMatrix = matrix;
-  }
 
-  if (Object.keys(matrix).length === 0) {
-    next.keywordMatrix = undefined;
-  }
+    const matrix = { ...(next.keywordMatrix || {}) };
+    const pairs = pairOrPairs
+      ? Array.isArray(pairOrPairs)
+        ? pairOrPairs
+        : [pairOrPairs]
+      : [];
 
-  await prisma.setting.upsert({
-    where: { key },
-    create: { key, value: JSON.stringify(next) },
-    update: { value: JSON.stringify(next) },
+    for (const pair of pairs) {
+      if (!pair?.cafeId || !pair.keyword) continue;
+      const pairKey = makeProgressPairKey(pair.cafeId, pair.keyword);
+      const existingCell = matrix[pairKey] || {};
+      matrix[pairKey] = {
+        ...existingCell,
+        ...pair,
+        cafeId: pair.cafeId || existingCell.cafeId || "",
+        cafeName: pair.cafeName || existingCell.cafeName || pair.cafeId,
+        keyword: pair.keyword || existingCell.keyword || "",
+        updatedAt: now,
+      };
+      next.keywordMatrix = matrix;
+    }
+
+    if (Object.keys(matrix).length === 0) {
+      next.keywordMatrix = undefined;
+    }
+
+    await prisma.setting.upsert({
+      where: { key },
+      create: { key, value: JSON.stringify(next) },
+      update: { value: JSON.stringify(next) },
+    });
   });
 }
 
