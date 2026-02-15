@@ -882,26 +882,48 @@ async function getClubId(page: Page, cafeId: string): Promise<string> {
     return cafeId;
   }
 
-  // Use desktop cafe home because we will scrape desktop pages.
-  await page.goto(getCafeUrl(cafeId), { waitUntil: "domcontentloaded", timeout: 35000 });
+  // Prefer request-based resolution: much more stable than rendering the heavy cafe home.
+  // (Avoids "Page crashed" errors on some cafes.)
+  const homeUrl = getCafeUrl(cafeId);
+  try {
+    const resp = await page.request.get(homeUrl).catch(() => null);
+    if (resp) {
+      const finalUrl = resp.url();
+      try {
+        const u = new URL(finalUrl);
+        const clubid = u.searchParams.get("clubid") || u.searchParams.get("cafeId");
+        if (clubid) return clubid;
+      } catch {
+        // ignore
+      }
+
+      const html = await resp.text().catch(() => "");
+      const match =
+        html.match(/clubid=(\d+)/i) ||
+        html.match(/cafeId=(\d+)/i) ||
+        html.match(/\/cafes\/(\d+)\//i);
+      if (match?.[1]) return match[1];
+    }
+  } catch {
+    // ignore; fall back to rendering.
+  }
+
+  // Fallback: render the cafe home and inspect frames/HTML.
+  await page.goto(homeUrl, { waitUntil: "domcontentloaded", timeout: 35000 });
   await sleep(1200);
 
-  const candidates = page
-    .frames()
-    .map((f) => f.url())
-    .concat([page.url()]);
-
+  const candidates = page.frames().map((f) => f.url()).concat([page.url()]);
   for (const url of candidates) {
     try {
       const u = new URL(url);
-      const clubid = u.searchParams.get("clubid");
+      const clubid = u.searchParams.get("clubid") || u.searchParams.get("cafeId");
       if (clubid) return clubid;
     } catch {
       // ignore
     }
   }
 
-  const html = await page.content();
+  const html = await page.content().catch(() => "");
   const match =
     html.match(/clubid=(\d+)/i) ||
     html.match(/cafeId=(\d+)/i) ||
