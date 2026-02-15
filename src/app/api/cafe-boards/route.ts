@@ -12,6 +12,14 @@ type BodyPayload = {
   keywords?: unknown;
 };
 
+type BoardCacheEntry = {
+  boards: string[];
+  expiresAt: number;
+};
+
+const BOARD_CACHE_TTL_MS = 5 * 60 * 1000; // 5분
+const BOARD_CACHE = new Map<string, BoardCacheEntry>();
+
 function parseStringArray(input: unknown): string[] {
   if (Array.isArray(input)) {
     return input
@@ -49,6 +57,36 @@ function extractClubIdFromText(input: string): string {
   return "";
 }
 
+function normalizeCafeId(value: string): string {
+  return String(value || "").trim().toLowerCase();
+}
+
+function makeBoardCacheKey(cafeIds: string[]): string {
+  return cafeIds
+    .map((value) => normalizeCafeId(value))
+    .filter(Boolean)
+    .sort()
+    .join("|");
+}
+
+function normalizeBoardName(boardName: string): string | null {
+  const name = String(boardName || "").trim();
+  if (!name) return null;
+  if (name.length > 80) return null;
+  const token = normalizeBoardToken(name);
+  if (!token) return null;
+  return name;
+}
+
+function uniqueBoardNames(existing: Set<string>, input: string[]): Set<string> {
+  for (const name of input) {
+    const normalized = normalizeBoardName(name);
+    if (!normalized) continue;
+    existing.add(normalized);
+  }
+  return existing;
+}
+
 function extractCafeNumericId(cafeId: string): string {
   return String(cafeId || "").trim();
 }
@@ -82,12 +120,22 @@ async function fetchBoardsFromSearch(
   cafeNumericId: string,
   keyword: string
 ): Promise<BoardResponse[]> {
-  const q = encodeURIComponent(keyword || "");
+  const q = String(keyword || "").trim();
+  const params = new URLSearchParams({
+    cafeId: String(cafeNumericId),
+    searchBy: "1",
+    sortBy: "date",
+    page: "1",
+    perPage: "30",
+    adUnit: "MW_CAFE_BOARD",
+    ad: "true",
+  });
+
+  if (q) params.set("query", q);
+
   const url =
     `https://apis.naver.com/cafe-web/cafe-mobile/CafeMobileWebArticleSearchListV4` +
-    `?cafeId=${encodeURIComponent(cafeNumericId)}` +
-    `&query=${q}` +
-    `&searchBy=1&sortBy=date&page=1&perPage=20&adUnit=MW_CAFE_BOARD&ad=true`;
+    `?${params.toString()}`;
 
   const response = await fetch(url, {
     method: "GET",
@@ -103,8 +151,38 @@ async function fetchBoardsFromSearch(
   }
 
   const payload = await response.json().catch(() => ({}));
+  const boardNameCandidates: string[] = [];
+
+  const directMenus = [
+    payload?.message?.result?.menuList,
+    payload?.message?.result?.menus,
+    payload?.message?.result?.boardList,
+    payload?.message?.result?.articleListMeta?.boards,
+  ];
+  for (const list of directMenus) {
+    if (!Array.isArray(list)) continue;
+    for (const node of list) {
+      const boardName = String(
+        node?.name ||
+          node?.menuName ||
+          node?.title ||
+          node?.boardName ||
+          node?.menuTitle ||
+          node?.board ||
+          ""
+      ).trim();
+      if (!boardName) continue;
+      boardNameCandidates.push(boardName);
+    }
+  }
+
   const list = payload?.message?.result?.articleList || [];
   const boards: BoardResponse[] = [];
+
+  for (const boardName of boardNameCandidates) {
+    if (!normalizeBoardName(boardName)) continue;
+    boards.push({ boardName });
+  }
 
   for (const row of list) {
     if (row?.type !== "ARTICLE") continue;
@@ -124,6 +202,23 @@ async function fetchBoardsFromSearch(
     boards.push({ boardName });
   }
   return boards;
+}
+
+function getCachedBoards(cacheKey: string): string[] | null {
+  const cached = BOARD_CACHE.get(cacheKey);
+  if (!cached) return null;
+  if (Date.now() > cached.expiresAt) {
+    BOARD_CACHE.delete(cacheKey);
+    return null;
+  }
+  return cached.boards.slice();
+}
+
+function setCachedBoards(cacheKey: string, boards: string[]) {
+  BOARD_CACHE.set(cacheKey, {
+    boards,
+    expiresAt: Date.now() + BOARD_CACHE_TTL_MS,
+  });
 }
 
 export async function POST(request: NextRequest) {
@@ -153,20 +248,32 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ success: true, data: [] });
     }
 
-    const searchKeywords = keywords.length > 0 ? keywords.slice(0, 12) : [""]; // no keyword fallback
+    const cacheKey = makeBoardCacheKey(cafeIds);
+    const cached = getCachedBoards(cacheKey);
+    if (cached) {
+      return NextResponse.json({ success: true, data: cached });
+    }
+
+    const searchKeywords = keywords.length > 0 ? keywords.slice(0, 2) : [""]; // query-independent retrieval
     const boardNameSet = new Set<string>();
+    const searchPool = Array.from(new Set(searchKeywords.map((keyword) => String(keyword).trim()).filter(Boolean)));
+    const candidateQueries = searchPool.length > 0 ? ["", ...searchPool] : [""];
 
     for (const rawCafeId of cafeIds) {
       const numericId = await resolveCafeNumericId(rawCafeId);
       if (!numericId) continue;
-      for (const keyword of searchKeywords) {
+      for (const keyword of candidateQueries) {
         try {
           const boards = await fetchBoardsFromSearch(numericId, keyword);
           for (const board of boards) {
             const normalized = normalizeBoardToken(board.boardName);
-            if (normalized) boardNameSet.add(board.boardName.trim());
+            const pretty = normalizeBoardName(board.boardName);
+            if (normalized && pretty) {
+              boardNameSet.add(pretty);
+            }
           }
-          await new Promise((resolve) => setTimeout(resolve, 200));
+          await new Promise((resolve) => setTimeout(resolve, 150));
+          if (boardNameSet.size >= 80) break;
         } catch {
           // Ignore board-fetch failure for this cafe/keyword and continue.
         }
@@ -176,6 +283,7 @@ export async function POST(request: NextRequest) {
     const boardNames = Array.from(boardNameSet).sort((a, b) =>
       a.localeCompare(b, "ko")
     );
+    setCachedBoards(makeBoardCacheKey(cafeIds), boardNames);
     return NextResponse.json({ success: true, data: boardNames });
   } catch (error) {
     console.error("게시판 목록 조회 실패:", error);

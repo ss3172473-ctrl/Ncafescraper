@@ -565,7 +565,6 @@ export default function DashboardPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           cafeIds: selectedCafeIds,
-          keywords: keywordList,
         }),
       });
       const data = await res.json();
@@ -604,7 +603,7 @@ export default function DashboardPage() {
     } finally {
       setExcludeBoardLoading(false);
     }
-  }, [keywordList, selectedCafeIds, selectedExcludeBoards]);
+  }, [selectedCafeIds, selectedExcludeBoards]);
 
   useEffect(() => {
     const running = jobs.filter((j) => j.status === "RUNNING");
@@ -631,7 +630,7 @@ export default function DashboardPage() {
       fetchBoardCandidates();
     }, 400);
     return () => clearTimeout(timer);
-  }, [selectedCafeIds, keywordList, fetchBoardCandidates]);
+  }, [selectedCafeIds, fetchBoardCandidates]);
 
   const toggleCafe = (cafeId: string) => {
     setSelectedCafeIds((prev) =>
@@ -992,7 +991,7 @@ export default function DashboardPage() {
               </div>
               {selectedCafeIds.length === 0 ? (
                 <p className="mt-1 text-xs text-slate-600">
-                  먼저 카페를 선택하면 해당 카페 실제 게시판 목록을 자동으로 불러옵니다.
+                  먼저 카페를 선택하면 해당 카페 실제 게시판을 불러옵니다. (키워드와 무관)
                 </p>
               ) : excludeBoardLoading ? (
                 <p className="mt-1 text-xs text-slate-600">실제 게시판 목록을 조회하는 중입니다...</p>
