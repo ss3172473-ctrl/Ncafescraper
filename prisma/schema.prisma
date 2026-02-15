@@ -175,6 +175,8 @@ model ScrapePost {
   likeCount    Int?
   commentCount Int?
   contentText  String
+  bodyText     String?
+  commentsText String?
   contentHash  String   @unique
   rawHtml      String?
   createdAt    DateTime @default(now())

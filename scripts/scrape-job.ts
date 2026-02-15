@@ -1184,12 +1184,12 @@ async function fetchCandidatesFromSearchApi(
         const addedAtSafe = parseNaverCafeDate(item.addDate);
         const boardName = String(
           item.boardName ||
-            item.boardTitle ||
-            item.menuName ||
-            item.menu ||
-            item.menuTitle ||
-            item.board ||
-            ""
+          item.boardTitle ||
+          item.menuName ||
+          item.menu ||
+          item.menuTitle ||
+          item.board ||
+          ""
         ).trim();
 
         seenArticleIds.add(articleId);
@@ -1262,12 +1262,12 @@ async function fetchCandidatesFromSearchApiPage(
       const addedAtSafe = parseNaverCafeDate(item.addDate);
       const boardName = String(
         item.boardName ||
-          item.boardTitle ||
-          item.menuName ||
-          item.menu ||
-          item.menuTitle ||
-          item.board ||
-          ""
+        item.boardTitle ||
+        item.menuName ||
+        item.menu ||
+        item.menuTitle ||
+        item.board ||
+        ""
       ).trim();
 
       rows.push({
@@ -1295,71 +1295,8 @@ async function fetchCandidatesFromSearchApiPage(
   return rows;
 }
 
-async function collectArticleCandidates(
-  page: Page,
-  jobId: string,
-  cafeId: string,
-  cafeName: string,
-  keywords: string[],
-  excludedBoards: Set<string>,
-  maxUrls: number,
-  baseCollected: number
-): Promise<{ cafeNumericId: string; candidates: ArticleCandidate[] }> {
-  const seen = new Set<number>();
-  const candidates: ArticleCandidate[] = [];
-  const cafeNumericId = await getClubId(page, cafeId);
-  console.log(`[cafe] cafeId=${cafeId} cafeNumericId=${cafeNumericId}`);
-
-  // Requirement: for each selected cafe, search each keyword at least once.
-  // We cap per-keyword fetches by maxUrls so we can scale up without blowing up runtime.
-  // Use multiple pages only when needed to reach requested maxUrls.
-  const perKeywordTake = Math.max(1, Math.ceil(maxUrls / Math.max(1, keywords.length)));
-  const pagesToFetch = Math.min(6, Math.ceil(perKeywordTake / 20));
-
-  for (let i = 0; i < keywords.length; i += 1) {
-    const keyword = keywords[i] || "";
-    await setJobProgress(jobId, {
-      stage: "SEARCH",
-      cafeId,
-      cafeName,
-      keyword,
-      keywordIndex: i + 1,
-      keywordTotal: keywords.length,
-      candidates: candidates.length,
-      collected: baseCollected,
-      message: "searching",
-    }).catch(() => undefined);
-    console.log(`[collect] cafe=${cafeId} keyword=${keyword}`);
-    const rows = await fetchCandidatesFromSearchApi(page, cafeNumericId, keyword, 1, pagesToFetch).catch(() => []);
-    const take = Math.max(1, Math.min(perKeywordTake, rows.length));
-    for (let i = 0; i < take; i += 1) {
-      const row = rows[i];
-      if (!row) continue;
-      if (isExcludedBoard(row, excludedBoards)) {
-        console.log(`[collect] skip excluded board url=${row.url} board=${row.boardType}/${row.boardName}`);
-        continue;
-      }
-      if (seen.has(row.articleId)) continue;
-      seen.add(row.articleId);
-      if (candidates.length < maxUrls) {
-        candidates.push(row);
-      }
-    }
-    await sleep(180);
-  }
-
-  // Reduce parse load: keep the newest candidates first (search API is date-sorted, but merging across
-  // multiple keywords can reorder); also keep the list tight.
-  candidates.sort((a, b) => {
-    const at = a.addedAt ? a.addedAt.getTime() : 0;
-    const bt = b.addedAt ? b.addedAt.getTime() : 0;
-    return bt - at;
-  });
-  if (candidates.length > maxUrls) candidates.length = maxUrls;
-
-  console.log(`[collect] cafe=${cafeId} candidates=${candidates.length}`);
-  return { cafeNumericId, candidates };
-}
+// NOTE: collectArticleCandidates was removed — it was dead code never called from run().
+// The active code path uses collectCandidatesForKeyword() which correctly scans 4 pages.
 
 async function collectCandidatesForKeyword(
   page: Page,
@@ -1388,7 +1325,6 @@ async function collectCandidatesForKeyword(
   );
   let fetched = 0;
   let pagesScanned = 0;
-  let stopByDate = false;
   let excludedByBoard = 0;
   let duplicateInKeyword = 0;
   const duplicateAcrossKeywords = 0;
@@ -1476,8 +1412,9 @@ async function collectCandidatesForKeyword(
         continue;
       }
       if (fromDate && row.addedAt && row.addedAt < fromDate) {
-        stopByDate = true;
-        break;
+        // Skip old posts but do NOT break out of the loop — we must still scan all hardCapPages
+        // to fulfil the 4-page scanning guarantee. Individual rows outside the date range are simply skipped.
+        continue;
       }
 
       if (isExcludedBoard(row, excludedBoards)) {
@@ -1498,10 +1435,8 @@ async function collectCandidatesForKeyword(
 
     // Small delay to reduce burstiness and avoid rate-limit errors.
     await sleep(120 + Math.floor(Math.random() * 120));
-    if (stopByDate) break;
-    // NOTE: We query multiple `searchBy` modes and dedupe/merge results.
-    // The merged row count per page can be < SEARCH_API_PAGE_SIZE even when there are more pages.
-    // Only stop early when the API returns an empty page (handled above), we hit date/budget, or we filled the take.
+    // NOTE: Do NOT break early by date or by candidate count.
+    // Always scan all hardCapPages (4) so the UI shows 4/4 and user gets maximum coverage.
   }
 
   const take = candidates.length;
@@ -1941,8 +1876,7 @@ async function run(jobId: string) {
   console.log(
     `[run] start jobId=${jobId} keyCount=${parseJsonStringArray(job.keywords).length} direct=${Boolean(
       job.directUrls
-    )} maxPosts=${normalizeMaxPosts(job.maxPosts)} autoFilter=${job.useAutoFilter} fromDate=${
-      job.fromDate?.toISOString() || "-"
+    )} maxPosts=${normalizeMaxPosts(job.maxPosts)} autoFilter=${job.useAutoFilter} fromDate=${job.fromDate?.toISOString() || "-"
     } toDate=${job.toDate?.toISOString() || "-"}`
   );
 
@@ -2429,18 +2363,18 @@ async function run(jobId: string) {
               } catch {
                 // ignore
               }
-            await setJobProgress(
-              jobId,
-              {
-                stage: "PARSE",
-                cafeIndex: i + 1,
-                cafeTotal: cafeIds.length,
-                keywordIndex: k + 1,
-                keywordTotal: keywords.length,
-                cafeId,
-                cafeName,
-                url: cand.url,
-                candidates: collectResult.taken,
+              await setJobProgress(
+                jobId,
+                {
+                  stage: "PARSE",
+                  cafeIndex: i + 1,
+                  cafeTotal: cafeIds.length,
+                  keywordIndex: k + 1,
+                  keywordTotal: keywords.length,
+                  cafeId,
+                  cafeName,
+                  url: cand.url,
+                  candidates: collectResult.taken,
                   parseAttempts,
                   collected: collected.length,
                   message: `parse_fail(${keyword})`,
@@ -2451,7 +2385,7 @@ async function run(jobId: string) {
                   cafeId,
                   cafeName,
                   keyword,
-                  status: "skipped",
+                  status: "parsing",
                   searched: collectResult.fetched,
                   pagesScanned: collectResult.pagesScanned,
                   pagesTarget: collectResult.pagesTarget,
@@ -2665,6 +2599,8 @@ async function run(jobId: string) {
           likeCount: post.likeCount,
           commentCount: post.commentCount,
           contentText: post.contentText,
+          bodyText: post.bodyText || "",
+          commentsText: post.commentsText || "",
           contentHash: hash,
           rawHtml: post.rawHtml,
         },

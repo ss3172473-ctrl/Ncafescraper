@@ -188,18 +188,22 @@ function resolveDisplayStatus(jobStatus: string, progress: JobProgress | null): 
 function cellStatusLabel(cell: JobProgressCell | null, jobStatus: "QUEUED" | "RUNNING" | "SUCCESS" | "FAILED" | "CANCELLED", isCurrent: boolean) {
   if (cell) {
     const s = String(cell.status || "").toLowerCase();
-    if (s === "done") return "완료";
-    if (s === "failed") return "실패";
-    if (s === "skipped") return "스킵";
-    if (s === "parsing") return "파싱";
-    if (s === "searching") return isCurrent ? "실행" : "대기";
-    return isCurrent ? "실행" : "대기";
+    if (s === "done") return "✅ 완료";
+    if (s === "failed") return "❌ 실패";
+    if (s === "skipped") return "⏭ 스킵";
+    if (s === "parsing") return "🔄 파싱";
+    if (s === "searching") return isCurrent ? "🔍 실행" : "⏳ 대기";
+    // Cell exists but no recognized status — use job-level status for terminal states
+    if (jobStatus === "SUCCESS") return "✅ 완료";
+    if (jobStatus === "FAILED") return "❌ 실패";
+    if (jobStatus === "CANCELLED") return "🚫 중단";
+    return isCurrent ? "🔍 실행" : "⏳ 대기";
   }
-  if (jobStatus === "SUCCESS") return "완료";
-  if (jobStatus === "FAILED") return "실패";
-  if (jobStatus === "CANCELLED") return "중단";
-  if (jobStatus === "RUNNING") return isCurrent ? "실행" : "대기";
-  return "대기";
+  if (jobStatus === "SUCCESS") return "✅ 완료";
+  if (jobStatus === "FAILED") return "❌ 실패";
+  if (jobStatus === "CANCELLED") return "🚫 중단";
+  if (jobStatus === "RUNNING") return isCurrent ? "🔍 실행" : "⏳ 대기";
+  return "⏳ 대기";
 }
 
 function cellMetaLine(cell: JobProgressCell | null) {
