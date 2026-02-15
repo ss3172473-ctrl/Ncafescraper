@@ -106,8 +106,8 @@ function parseInputToSearchParams(raw: string): { cafeId: string; keyword: strin
   }
 
   const keyword = decodeURIComponent(url.searchParams.get("q") || "").trim();
-  const pageParam = Number(url.searchParams.get("page") || "1");
   const sizeParam = Number(url.searchParams.get("size") || "50");
+  const pageLimitParam = Number(url.searchParams.get("pages") || "4");
 
   if (!cafeId || !keyword) {
     throw new Error(`URL 파싱 실패: 카페ID/키워드를 찾지 못했습니다: ${trimmed}`);
@@ -116,7 +116,7 @@ function parseInputToSearchParams(raw: string): { cafeId: string; keyword: strin
   return {
     cafeId,
     keyword,
-    pages: Number.isFinite(pageParam) && pageParam > 0 ? pageParam : 4,
+    pages: Number.isFinite(pageLimitParam) && pageLimitParam > 0 ? pageLimitParam : 4,
     size: Number.isFinite(sizeParam) && sizeParam > 0 ? Math.min(100, sizeParam) : 50,
   };
 }
