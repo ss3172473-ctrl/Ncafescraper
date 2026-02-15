@@ -35,6 +35,8 @@ type ScrapeJob = {
   id: string;
   status: string;
   createdAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
   keywords: string;
   cafeIds: string;
   cafeNames: string | null;
@@ -119,6 +121,50 @@ function formatAgo(iso?: string) {
   if (hr < 24) return `${hr}시간 전`;
   const day = Math.floor(hr / 24);
   return `${day}일 전`;
+}
+
+function formatElapsed(startIso?: string | null, endIso?: string | null, now?: number) {
+  if (!startIso) return "-";
+  const start = new Date(startIso).getTime();
+  if (Number.isNaN(start)) return "-";
+  const end = endIso ? new Date(endIso).getTime() : (now || Date.now());
+  const diffS = Math.max(0, Math.floor((end - start) / 1000));
+  const m = Math.floor(diffS / 60);
+  const s = diffS % 60;
+  if (m >= 60) {
+    const h = Math.floor(m / 60);
+    return `${h}시간 ${m % 60}분 ${String(s).padStart(2, "0")}초`;
+  }
+  return `${m}분 ${String(s).padStart(2, "0")}초`;
+}
+
+function isProgressStale(updatedAt?: string, thresholdMs = 30000): boolean {
+  if (!updatedAt) return false;
+  const t = new Date(updatedAt).getTime();
+  if (Number.isNaN(t)) return false;
+  return Date.now() - t > thresholdMs;
+}
+
+function statusBadgeClass(status: string): string {
+  switch (status) {
+    case "RUNNING": return "bg-blue-100 text-blue-800";
+    case "SUCCESS": return "bg-green-100 text-green-800";
+    case "FAILED": return "bg-red-100 text-red-800";
+    case "CANCELLED": return "bg-yellow-100 text-yellow-800";
+    case "QUEUED": return "bg-slate-100 text-slate-800";
+    default: return "bg-slate-100 text-slate-600";
+  }
+}
+
+function statusEmoji(status: string): string {
+  switch (status) {
+    case "RUNNING": return "🔄";
+    case "SUCCESS": return "✅";
+    case "FAILED": return "❌";
+    case "CANCELLED": return "🚫";
+    case "QUEUED": return "⏳";
+    default: return "❓";
+  }
 }
 
 function shortenCafeName(name: string, max = 15) {
@@ -363,6 +409,7 @@ export default function DashboardPage() {
   const [jobsLoading, setJobsLoading] = useState(true);
   const [progressByJobId, setProgressByJobId] = useState<Record<string, JobProgress | null>>({});
   const [cancellingJobId, setCancellingJobId] = useState<string | null>(null);
+  const [nowTick, setNowTick] = useState(Date.now());
 
   useEffect(() => {
     const stored = getStoredSessionPanelOpen();
@@ -481,16 +528,31 @@ export default function DashboardPage() {
     };
   }, [fetchJobs]);
 
-  // Poll progress for recent active/queued jobs.
+  // Elapsed time ticker — re-renders every second when there are active jobs.
+  useEffect(() => {
+    const hasActive = jobs.some((j) => {
+      const p = progressByJobId[j.id] || null;
+      return resolveDisplayStatus(j.status, p) === "RUNNING";
+    });
+    if (!hasActive) return;
+    const t = setInterval(() => setNowTick(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [jobs, progressByJobId]);
+
+  // Poll progress for recent active/queued jobs AND recently completed jobs (within 10 min).
   const trackedJobs = useMemo(() => {
     const recent = jobs
       .slice()
       .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
-      .slice(0, 10);
+      .slice(0, 20);
+    const cutoff = Date.now() - 1000 * 60 * 10; // 10 min
     return recent.filter((j) => {
       const p = progressByJobId[j.id] || null;
       const st = resolveDisplayStatus(j.status, p);
-      return st === "RUNNING" || st === "QUEUED";
+      if (st === "RUNNING" || st === "QUEUED") return true;
+      // Also track recently completed/failed/cancelled jobs so the UI shows final results.
+      const completedAt = j.completedAt ? new Date(j.completedAt).getTime() : 0;
+      return completedAt > cutoff;
     });
   }, [jobs, progressByJobId]);
 
@@ -1051,16 +1113,27 @@ export default function DashboardPage() {
               <div className="mt-2 grid grid-cols-1 md:grid-cols-2 gap-2">
                 {batchCafes.map((c) => {
                   const p = progressByJobId[c.jobId] || null;
+                  const job = latestBatchJobs.find((j) => j.id === c.jobId);
                   const msg = p?.message ? String(p.message) : "-";
                   const when = p?.updatedAt ? formatAgo(p.updatedAt) : "-";
+                  const elapsed = job ? formatElapsed(job.startedAt, job.completedAt, nowTick) : "-";
+                  const stale = c.status === "RUNNING" && isProgressStale(p?.updatedAt);
                   return (
-                    <div key={c.jobId} className="text-xs border border-slate-200 rounded-md p-2 bg-white">
-                      <div className="font-semibold text-slate-800 truncate" title={c.cafeName}>
-                        {shortenCafeName(c.cafeName)}
+                    <div key={c.jobId} className={`text-xs border rounded-md p-2 ${stale ? "border-amber-400 bg-amber-50" : "border-slate-200 bg-white"}`}>
+                      <div className="flex items-center justify-between">
+                        <div className="font-semibold text-slate-800 truncate" title={c.cafeName}>
+                          {shortenCafeName(c.cafeName)}
+                        </div>
+                        <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${statusBadgeClass(c.status)}`}>
+                          {statusEmoji(c.status)} {c.status}
+                        </span>
                       </div>
-                      <div className="text-slate-600">상태: {c.status} / 수집: {c.collected}</div>
+                      <div className="text-slate-600 mt-1">수집: {c.collected}건 · 경과: {elapsed}</div>
+                      {stale ? (
+                        <div className="text-amber-700 font-semibold mt-0.5">⚠️ 30초 이상 응답 없음 — 작업이 멈췄을 수 있습니다</div>
+                      ) : null}
                       <div className="text-slate-600 truncate" title={msg}>메시지: {msg}</div>
-                      <div className="text-slate-500">업데이트: {when}</div>
+                      <div className="text-slate-500">최근 업데이트: {when}</div>
                       {(c.status === "RUNNING" || c.status === "QUEUED") ? (
                         <button
                           type="button"
@@ -1078,6 +1151,55 @@ export default function DashboardPage() {
             </div>
           ) : (
             <p className="text-sm text-slate-600">최근 작업이 없습니다.</p>
+          )}
+        </section>
+
+        <section className="bg-white border border-slate-200 rounded-2xl p-5 space-y-3">
+          <h2 className="text-lg font-semibold text-black">작업 이력</h2>
+          {jobsLoading ? <p className="text-sm text-slate-600">불러오는 중...</p> : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs border border-slate-200 rounded-md">
+                <thead>
+                  <tr className="text-left border-b border-slate-200 bg-slate-50">
+                    <th className="px-2 py-2">상태</th>
+                    <th className="px-2 py-2">카페</th>
+                    <th className="px-2 py-2">키워드</th>
+                    <th className="px-2 py-2">수집</th>
+                    <th className="px-2 py-2">Sheet</th>
+                    <th className="px-2 py-2">경과시간</th>
+                    <th className="px-2 py-2">생성</th>
+                    <th className="px-2 py-2">에러</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {jobs.slice(0, 20).map((j) => {
+                    const p = progressByJobId[j.id] || null;
+                    const st = resolveDisplayStatus(j.status, p);
+                    const cafeNames = parseJsonList(j.cafeNames).join(", ") || parseJsonList(j.cafeIds).join(", ") || "-";
+                    const kws = parseJsonList(j.keywords).slice(0, 3).join(", ");
+                    const kwsMore = parseJsonList(j.keywords).length > 3 ? ` +${parseJsonList(j.keywords).length - 3}` : "";
+                    const elapsed = formatElapsed(j.startedAt, j.completedAt, nowTick);
+                    const collected = typeof p?.collected === "number" ? p.collected : (j.resultCount ?? 0);
+                    return (
+                      <tr key={j.id} className="border-b border-slate-100 hover:bg-slate-50">
+                        <td className="px-2 py-1.5">
+                          <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${statusBadgeClass(st)}`}>
+                            {statusEmoji(st)} {st}
+                          </span>
+                        </td>
+                        <td className="px-2 py-1.5 max-w-[120px] truncate" title={cafeNames}>{cafeNames}</td>
+                        <td className="px-2 py-1.5 max-w-[150px] truncate" title={parseJsonList(j.keywords).join(", ")}>{kws}{kwsMore}</td>
+                        <td className="px-2 py-1.5">{collected}</td>
+                        <td className="px-2 py-1.5">{j.sheetSynced ?? "-"}</td>
+                        <td className="px-2 py-1.5 whitespace-nowrap">{elapsed}</td>
+                        <td className="px-2 py-1.5 whitespace-nowrap">{formatAgo(j.createdAt)}</td>
+                        <td className="px-2 py-1.5 max-w-[200px] truncate text-red-600" title={j.errorMessage || ""}>{j.errorMessage || "-"}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
           )}
         </section>
       </div>
