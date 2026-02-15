@@ -16,7 +16,8 @@
     "db:push": "npx prisma db push",
     "cafes:refresh": "npx ts-node --project tsconfig.scripts.json scripts/refresh-cafes.ts",
     "scrape:job": "npx ts-node --project tsconfig.scripts.json scripts/scrape-job.ts",
-    "worker": "npx ts-node --project tsconfig.scripts.json scripts/queue-worker.ts"
+    "worker": "npx ts-node --project tsconfig.scripts.json scripts/queue-worker.ts",
+    "debug:cafe-search": "npx ts-node --project tsconfig.scripts.json scripts/debug-cafe-search.ts"
   },
   "dependencies": {
     "@google/generative-ai": "^0.21.0",
