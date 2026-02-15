@@ -5,6 +5,10 @@ import { Prisma } from "@prisma/client";
 
 export const runtime = "nodejs";
 
+type PgExistsRow = {
+  exists: boolean;
+};
+
 function toJobSelect() {
   const select: Prisma.ScrapeJobSelect = {
     id: true,
@@ -126,6 +130,26 @@ function formatCreateError(error: unknown): string {
     return `[${code}] ${message}`;
   }
   return message || "알 수 없는 오류";
+}
+
+async function ensureScrapeJobExcludeBoardsColumn(): Promise<void> {
+  const [hasColumnRaw] = await prisma.$queryRaw<Array<PgExistsRow>>(
+    Prisma.sql`
+      SELECT EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'ScrapeJob'
+          AND lower(column_name) = 'excludeboards'
+      ) AS exists
+    `
+  );
+
+  if (hasColumnRaw?.exists) {
+    return;
+  }
+
+  await prisma.$executeRaw`ALTER TABLE "ScrapeJob" ADD COLUMN IF NOT EXISTS "excludeBoards" TEXT`;
 }
 
 export async function GET() {
@@ -250,6 +274,11 @@ export async function POST(request: NextRequest) {
     };
     let job;
     try {
+      try {
+        await ensureScrapeJobExcludeBoardsColumn();
+      } catch (error) {
+        console.warn("excludeBoards 컬럼 확인 실패, 기본 폴백 동작으로 진행", error);
+      }
       job = await prisma.scrapeJob.create({
         data: {
           ...baseData,
