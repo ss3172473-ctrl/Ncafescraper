@@ -61,6 +61,14 @@ function toDateValue(input: unknown): Date | null {
 function formatCreateError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   const code = (error as { code?: string } | undefined)?.code;
+  const normalized = String(message || "").toLowerCase();
+  if (normalized.includes("excludeboards") && normalized.includes("does not exist")) {
+    return [
+      "DB 스키마가 오래돼서 'ScrapeJob.excludeBoards' 컬럼이 없습니다.",
+      "해결: DATABASE_URL 대상 DB에서 prisma 마이그레이션(또는 db push) 실행 필요.",
+      "임시 SQL: ALTER TABLE \"ScrapeJob\" ADD COLUMN \"excludeBoards\" TEXT;",
+    ].join(" ");
+  }
 
   if (code) {
     if (code === "P1001") {
