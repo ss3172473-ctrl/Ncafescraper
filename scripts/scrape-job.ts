@@ -1420,7 +1420,7 @@ async function collectCandidatesForKeyword(
 
     if (pageRows.length === 0) {
       // Keep scanning remaining pages (bounded to 4) so UI can confirm we attempted deep scan.
-      await sleep(120 + Math.floor(Math.random() * 120));
+      await sleep(50 + Math.floor(Math.random() * 50));
       continue;
     }
 
@@ -1452,7 +1452,7 @@ async function collectCandidatesForKeyword(
     }
 
     // Small delay to reduce burstiness and avoid rate-limit errors.
-    await sleep(120 + Math.floor(Math.random() * 120));
+    await sleep(50 + Math.floor(Math.random() * 50));
     // NOTE: Do NOT break early by date or by candidate count.
     // Always scan all hardCapPages (4) so the UI shows 4/4 and user gets maximum coverage.
   }
@@ -1507,7 +1507,7 @@ async function parsePost(
   for (const u of urlVariants) {
     visited.push(u);
     await withTimeout(page.goto(u, { waitUntil: "domcontentloaded", timeout: 35000 }), 45000, "page.goto");
-    await sleep(1200);
+    await sleep(400);
     console.log(`[parse] loaded url=${page.url()}`);
 
     if (page.url().includes("nidlogin")) {
@@ -1557,7 +1557,7 @@ async function parsePost(
       const clicks = Math.min(count, 6);
       for (let i = 0; i < clicks; i += 1) {
         await candidates.nth(i).click({ timeout: 1500 }).catch(() => undefined);
-        await sleep(200);
+        await sleep(80);
       }
 
       await frame
@@ -1565,7 +1565,7 @@ async function parsePost(
           window.scrollTo(0, document.body.scrollHeight);
         })
         .catch(() => undefined);
-      await sleep(400);
+      await sleep(150);
     }
 
     // Always scroll to ensure article body/comments are rendered before extraction.
@@ -1574,7 +1574,7 @@ async function parsePost(
         window.scrollTo(0, document.body.scrollHeight);
       })
       .catch(() => undefined);
-    await sleep(800);
+    await sleep(300);
 
     console.log("[parse] extracting post body/comments text");
     const bodyTextRaw = await extractPostBodyText(frame);
@@ -1600,7 +1600,7 @@ async function parsePost(
         45000,
         "page.goto feUrl"
       ).catch(() => undefined);
-      await sleep(1200);
+      await sleep(400);
       console.log(`[parse] FE loaded url=${page.url()}`);
       commentsTextRaw = await extractCommentsText(page);
       commentsText = String(commentsTextRaw || "").trim();
@@ -1978,6 +1978,15 @@ async function run(jobId: string) {
 
   const page = await context.newPage();
   page.setDefaultTimeout(15000);
+
+  // Block heavy resources we don't need — we only want text content.
+  await page.route("**/*", (route) => {
+    const type = route.request().resourceType();
+    if (["image", "media", "font", "stylesheet"].includes(type)) {
+      return route.abort();
+    }
+    return route.continue();
+  });
   await page.addInitScript(`
     Object.defineProperty(navigator, 'webdriver', { get: () => false });
   `);
