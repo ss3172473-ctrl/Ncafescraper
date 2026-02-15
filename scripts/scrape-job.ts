@@ -1295,8 +1295,8 @@ async function fetchCandidatesFromSearchApiPage(
           `?clubid=${encodeURIComponent(cafeNumericId)}` +
           `&articleid=${encodeURIComponent(String(item.articleId))}`,
         subject,
-        readCount: Number(item.readCount || 0),
-        commentCount: Number(item.commentCount || 0),
+        readCount: Number(String(item.readCount || 0).replace(/[^0-9]/g, "")),
+        commentCount: Number(String(item.commentCount || 0).replace(/[^0-9]/g, "")),
         likeCount: Number(item.likeItCount || 0),
         boardType: String(item.boardType || "L"),
         boardName,
@@ -2205,7 +2205,7 @@ async function run(jobId: string) {
           }
 
           // --- Concurrent Processing Setup ---
-          const concurrency = 20; // Increased to 20 for max speed
+          const concurrency = 10; // Reduced to 10 to prevent OOM (20 was too high)
           const limit = pLimit(concurrency);
 
           const tasks = collectResult.candidates.filter(cand => {
@@ -2215,7 +2215,15 @@ async function run(jobId: string) {
               skippedByDuplicate += 1;
               return false;
             }
-            // Date and count filters removed as per user request.
+            // Speed Optimization: Skip low quality posts (No comments or low views)
+            if (cand.commentCount < 1) {
+              keywordSkipped += 1;
+              return false;
+            }
+            if (cand.readCount <= 100) {
+              keywordSkipped += 1;
+              return false;
+            }
 
             // Board filter
             const boardToken = normalizeBoardToken(cand.boardName || cand.boardType || "");
@@ -2230,6 +2238,8 @@ async function run(jobId: string) {
           const runCandidate = async (cand: ArticleCandidate) => {
             if (await isCancelRequested(jobId)) return;
             if (remainingForCafe <= 0) return;
+            // Debug Log to verify filter effectiveness
+            // console.log(`[debug] processing articleId=${cand.articleId} rc=${cand.readCount} cc=${cand.commentCount}`);
 
             seenArticleIds.add(cand.articleId);
             parseAttempts += 1;
