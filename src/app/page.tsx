@@ -774,8 +774,18 @@ export default function DashboardPage() {
                 <div className="mt-2 space-y-2 text-sm text-slate-700">
                   <ol className="list-decimal pl-5 space-y-1">
                     <li>
-                      내 PC에서 이 프로젝트 폴더로 이동:
-                      <span className="ml-2 font-mono">cd &quot;/Users/leesungjun/Documents/New project/naver-bc-automation&quot;</span>
+                      내 PC에서 <span className="font-semibold">이 프로젝트 폴더(= package.json이 있는 폴더)</span>로 이동합니다.
+                      <div className="mt-1 text-xs text-slate-600">
+                        폴더 이름은 <span className="font-mono">naver-bc-automation</span>일 수도 있고 <span className="font-mono">Ncafescraper</span>일 수도 있습니다. 이름은 상관 없고, <span className="font-semibold">현재 프로젝트가 있는 폴더</span>로만 들어가면 됩니다.
+                      </div>
+                      <div className="mt-1 font-mono text-xs text-slate-700">
+                        cd &quot;&lt;프로젝트폴더&gt;&quot;{" "}
+                        <span className="text-slate-500">(예: /Users/leesungjun/Documents/New project/naver-bc-automation)</span>
+                      </div>
+                      <div className="mt-1 font-mono text-xs text-slate-700">
+                        ls package.json{" "}
+                        <span className="text-slate-500">(이 파일이 보여야 정상)</span>
+                      </div>
                     </li>
                     <li>
                       의존성 설치(최초 1회):
@@ -798,6 +808,10 @@ export default function DashboardPage() {
                     </li>
                     <li>
                       위 파일의 내용을 <span className="font-semibold">처음부터 끝까지 전체 복사</span>해서 아래 입력칸에 붙여넣고 <span className="font-semibold">세션 저장</span>을 누르세요.
+                      <div className="mt-1 text-xs text-slate-600">
+                        Mac에서 한 번에 복사(선택):
+                        <span className="ml-2 font-mono">cat playwright/storage/naver-cafe-session.json | pbcopy</span>
+                      </div>
                     </li>
                   </ol>
 
