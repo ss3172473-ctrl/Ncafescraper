@@ -1426,14 +1426,8 @@ async function collectCandidatesForKeyword(
 
     for (const row of pageRows) {
       if (!row) continue;
-      if (toDate && row.addedAt && row.addedAt > toDate) {
-        continue;
-      }
-      if (fromDate && row.addedAt && row.addedAt < fromDate) {
-        // Skip old posts but do NOT break out of the loop — we must still scan all hardCapPages
-        // to fulfil the 4-page scanning guarantee. Individual rows outside the date range are simply skipped.
-        continue;
-      }
+      // Date filters removed as per user request
+
 
       if (isExcludedBoard(row, excludedBoards)) {
         excludedByBoard += 1;
@@ -2186,8 +2180,9 @@ async function run(jobId: string) {
             job.id,
             Math.max(1, Math.ceil(remainingForCafe / Math.max(1, keywords.length - k))),
             excludedBoardTokens,
-            job.fromDate || null,
-            job.toDate || null
+            null,
+            null
+
           );
 
           console.log(
@@ -2210,7 +2205,7 @@ async function run(jobId: string) {
           }
 
           // --- Concurrent Processing Setup ---
-          const concurrency = 5;
+          const concurrency = 12; // Increased from 5 for speed as per user request
           const limit = pLimit(concurrency);
 
           const tasks = collectResult.candidates.filter(cand => {
@@ -2220,30 +2215,8 @@ async function run(jobId: string) {
               skippedByDuplicate += 1;
               return false;
             }
-            // Date filter
-            if (job.fromDate && cand.addedAt && cand.addedAt < job.fromDate) {
-              keywordSkipped += 1;
-              skippedByDate += 1;
-              return false;
-            }
-            if (job.toDate && cand.addedAt && cand.addedAt > job.toDate) {
-              keywordSkipped += 1;
-              skippedByDate += 1;
-              return false;
-            }
-            // Count filter
-            if (job.minViewCount !== null && cand.readCount < job.minViewCount) {
-              keywordSkipped += 1;
-              keywordFiltered += 1;
-              filteredByMinView += 1;
-              return false;
-            }
-            if (job.minCommentCount !== null && cand.commentCount < job.minCommentCount) {
-              keywordSkipped += 1;
-              keywordFiltered += 1;
-              filteredByMinComment += 1;
-              return false;
-            }
+            // Date and count filters removed as per user request.
+
             // Board filter
             const boardToken = normalizeBoardToken(cand.boardName || cand.boardType || "");
             if (boardToken && blockedBoardTokens.has(boardToken)) {

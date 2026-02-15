@@ -413,9 +413,8 @@ export default function DashboardPage() {
   const [selectedCafeIds, setSelectedCafeIds] = useState<string[]>([]);
 
   const [keywords, setKeywords] = useState<string[]>([]);
-  const [datePreset, setDatePreset] = useState<"1m" | "3m" | "6m" | "1y" | "2y" | "all">("1y");
-  const [minViewCount, setMinViewCount] = useState<string>("100");
-  const [minCommentCount, setMinCommentCount] = useState<string>("5");
+  // Removed filters as per user request
+
   const [maxPostsTotal, setMaxPostsTotal] = useState<string>(""); // keep blank by default
   const [creating, setCreating] = useState(false);
 
@@ -745,14 +744,12 @@ export default function DashboardPage() {
       return;
     }
 
-    const { fromDate, toDate } = computeDateRange(datePreset);
     const payloadBase = {
       keywords: keywordToQueryString(keywords),
-      fromDate,
-      toDate,
-      minViewCount: minViewCount.trim() === "" ? null : Number(minViewCount),
-      minCommentCount: minCommentCount.trim() === "" ? null : Number(minCommentCount),
-      // Simplified mode: do not auto-pick thresholds.
+      fromDate: null,
+      toDate: null,
+      minViewCount: null,
+      minCommentCount: null,
       useAutoFilter: false,
     } as const;
 
@@ -1001,55 +998,8 @@ export default function DashboardPage() {
             <KeywordInput value={keywords} onChange={setKeywords} />
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-            <div className="space-y-1">
-              <label className="text-sm text-slate-700">기간</label>
-              <select
-                className="w-full border border-slate-200 rounded px-2 py-2 text-sm bg-white text-black"
-                value={datePreset}
-                onChange={(e) => {
-                  const v = e.target.value;
-                  if (v === "1m" || v === "3m" || v === "6m" || v === "1y" || v === "2y" || v === "all") {
-                    setDatePreset(v);
-                  }
-                }}
-              >
-                <option value="1m">최근 1개월</option>
-                <option value="3m">최근 3개월</option>
-                <option value="6m">최근 6개월</option>
-                <option value="1y">최근 1년</option>
-                <option value="2y">최근 2년</option>
-                <option value="all">전체</option>
-              </select>
-              <div className="text-xs text-slate-600">
-                {(() => {
-                  const r = computeDateRange(datePreset);
-                  if (!r.fromDate || !r.toDate) return "기간 제한 없음";
-                  return `${r.fromDate} ~ ${r.toDate}`;
-                })()}
-              </div>
-            </div>
+          {/* Filters removed as per user request */}
 
-            <div className="space-y-1">
-              <label className="text-sm text-slate-700">최소 조회수</label>
-              <input
-                className="w-full border border-slate-200 rounded px-2 py-2 text-sm bg-white text-black"
-                value={minViewCount}
-                onChange={(e) => setMinViewCount(e.target.value)}
-                placeholder="예: 100"
-              />
-            </div>
-
-            <div className="space-y-1">
-              <label className="text-sm text-slate-700">최소 댓글수</label>
-              <input
-                className="w-full border border-slate-200 rounded px-2 py-2 text-sm bg-white text-black"
-                value={minCommentCount}
-                onChange={(e) => setMinCommentCount(e.target.value)}
-                placeholder="예: 5"
-              />
-            </div>
-          </div>
 
           <div className="space-y-1">
             <label className="text-sm text-slate-700">최대 수집 글 수 (전체 합산, 비워두면 기본값)</label>
