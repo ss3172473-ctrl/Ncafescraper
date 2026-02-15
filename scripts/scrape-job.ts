@@ -2285,6 +2285,23 @@ async function run(jobId: string) {
                     if (boardToken) blockedBoardTokens.add(boardToken);
                   }
                 } catch { }
+
+                // Update progress even on parse failure to keep stale timer alive
+                await setJobProgress(jobId, {
+                  stage: "PARSE",
+                  cafeId,
+                  cafeName,
+                  keyword,
+                  collected: collected.length,
+                  message: "parsing",
+                }, {
+                  cafeId,
+                  cafeName,
+                  keyword,
+                  status: "parsing",
+                  totalResults: collectResult.taken,
+                  collected: collected.length,
+                }).catch(() => undefined);
                 return;
               }
 
@@ -2304,6 +2321,23 @@ async function run(jobId: string) {
               collected.push(parsed);
               remainingForCafe -= 1;
               cafeKeywordCollected += 1;
+
+              // Update progress after each successful collection
+              await setJobProgress(jobId, {
+                stage: "PARSE",
+                cafeId,
+                cafeName,
+                keyword,
+                collected: collected.length,
+                message: "parsing",
+              }, {
+                cafeId,
+                cafeName,
+                keyword,
+                status: "parsing",
+                totalResults: collectResult.taken,
+                collected: collected.length,
+              }).catch(() => undefined);
 
               sheetPending.push({
                 jobId,

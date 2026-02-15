@@ -138,7 +138,7 @@ function formatElapsed(startIso?: string | null, endIso?: string | null, now?: n
   return `${m}분 ${String(s).padStart(2, "0")}초`;
 }
 
-function isProgressStale(updatedAt?: string, thresholdMs = 30000): boolean {
+function isProgressStale(updatedAt?: string, thresholdMs = 90000): boolean {
   if (!updatedAt) return false;
   const t = new Date(updatedAt).getTime();
   if (Number.isNaN(t)) return false;
@@ -279,22 +279,13 @@ function cellMetaLine(cell: JobProgressCell | null) {
   if (!cell) return "";
   const t = Number(cell.totalResults ?? 0) || 0;
   const c = Number(cell.collected ?? 0) || 0;
-  const s = Number(cell.skipped ?? 0) || 0;
-  const f = Number(cell.filteredOut ?? 0) || 0;
-  return `후보 ${t} / 수집 ${c} / 스킵 ${s} / 필터 ${f}`;
-}
-
-function cellPagesLine(cell: JobProgressCell | null) {
-  if (!cell) return "";
   const scanned = Number(cell.pagesScanned ?? 0) || 0;
   const target = Number(cell.pagesTarget ?? 0) || 0;
-  const fetched =
-    typeof cell.fetchedRows === "number"
-      ? cell.fetchedRows
-      : (typeof cell.searched === "number" ? cell.searched : null);
-  if (target > 0) return `페이지 ${scanned}/${target}${fetched !== null ? ` (fetched ${fetched})` : ""}`;
-  if (fetched !== null) return `fetched ${fetched}`;
-  return "";
+  const parts: string[] = [];
+  if (target > 0) parts.push(`${scanned}/${target}p`);
+  parts.push(`스캔 ${t}`);
+  parts.push(`수집 ${c}`);
+  return parts.join(" · ");
 }
 
 function getStoredSessionPanelOpen(): boolean | null {
@@ -1145,14 +1136,11 @@ export default function DashboardPage() {
                             <td
                               key={`${c.cafeId}-${kw}`}
                               className={`px-2 py-2 align-top transition-colors duration-150 hover:bg-slate-100 cursor-default ${bgCls}`}
-                              title={[cellMetaLine(cell), cellPagesLine(cell)].filter(Boolean).join(" / ")}
+                              title={cellMetaLine(cell)}
                             >
                               <div className="space-y-0.5">
                                 <div className="font-medium">{status}</div>
                                 <div className="text-[11px] text-slate-600">{cellMetaLine(cell)}</div>
-                                {cell ? (
-                                  <div className="text-[11px] text-slate-400">{cellPagesLine(cell)}</div>
-                                ) : null}
                               </div>
                             </td>
                           );
@@ -1183,7 +1171,7 @@ export default function DashboardPage() {
                       </div>
                       <div className="text-slate-600 mt-1">수집: {c.collected}건 · 경과: {elapsed}</div>
                       {stale ? (
-                        <div className="text-amber-700 font-semibold mt-0.5">⚠️ 30초 이상 응답 없음 — 작업이 멈췄을 수 있습니다</div>
+                        <div className="text-amber-700 font-semibold mt-0.5">⚠️ 90초 이상 응답 없음 — 작업이 멈췄을 수 있습니다</div>
                       ) : null}
                       <div className="text-slate-600 truncate" title={msg}>메시지: {msg}</div>
                       <div className="text-slate-500">최근 업데이트: {when}</div>
