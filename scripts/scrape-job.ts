@@ -1281,9 +1281,12 @@ async function collectCandidatesForKeyword(
   const seen = new Set<number>();
   const budgetPages = Math.ceil(Math.max(1, Math.min(perKeywordTake, 200)) / 20);
   const hardCapPages = Math.min(12, Math.max(3, budgetPages));
-  const rows: ArticleCandidate[] = [];
   let fetched = 0;
   let stopByDate = false;
+  let excludedByBoard = 0;
+  let duplicateInKeyword = 0;
+  let duplicateAcrossKeywords = 0;
+  const effectiveTake = Math.max(1, Math.min(perKeywordTake, 200));
 
   for (let pageNo = 1; pageNo <= hardCapPages; pageNo += 1) {
     const pageRows = await fetchCandidatesFromSearchApiPage(page, cafeNumericId, keyword, pageNo).catch(() => []);
@@ -1297,35 +1300,33 @@ async function collectCandidatesForKeyword(
       }
       if (fromDate && row.addedAt && row.addedAt < fromDate) {
         stopByDate = true;
+        break;
+      }
+
+      if (isExcludedBoard(row, excludedBoards)) {
+        excludedByBoard += 1;
         continue;
       }
-      rows.push(row);
+
+      if (seen.has(row.articleId)) {
+        duplicateInKeyword += 1;
+        continue;
+      }
+
+      seen.add(row.articleId);
+      candidates.push(row);
+
+      if (candidates.length >= effectiveTake) {
+        break;
+      }
     }
 
-    if (rows.length >= perKeywordTake) break;
+    if (candidates.length >= effectiveTake) break;
     if (stopByDate) break;
     if (pageRows.length < 20) break;
   }
 
-  const take = Math.max(1, Math.min(perKeywordTake, rows.length));
-  let excludedByBoard = 0;
-  let duplicateInKeyword = 0;
-  let duplicateAcrossKeywords = 0;
-
-  for (let i = 0; i < take; i += 1) {
-    const row = rows[i];
-    if (!row) continue;
-    if (isExcludedBoard(row, excludedBoards)) {
-      excludedByBoard += 1;
-      continue;
-    }
-    if (seen.has(row.articleId)) {
-      duplicateInKeyword += 1;
-      continue;
-    }
-    seen.add(row.articleId);
-    candidates.push(row);
-  }
+  const take = candidates.length;
 
   candidates.sort((a, b) => {
     const at = a.addedAt ? a.addedAt.getTime() : 0;
