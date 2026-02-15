@@ -432,6 +432,7 @@ export default function DashboardPage() {
   const [jobsLoading, setJobsLoading] = useState(true);
   const [progressByJobId, setProgressByJobId] = useState<Record<string, JobProgress | null>>({});
   const [cancellingJobId, setCancellingJobId] = useState<string | null>(null);
+  const [cancellingAll, setCancellingAll] = useState(false);
   const [nowTick, setNowTick] = useState(Date.now());
 
   useEffect(() => {
@@ -717,6 +718,23 @@ export default function DashboardPage() {
       await fetchProgress(jobId);
     } finally {
       setCancellingJobId(null);
+    }
+  };
+
+  const cancelAllJobs = async () => {
+    if (!confirm("모든 활성 작업을 중단하시겠습니까?")) return;
+    try {
+      setCancellingAll(true);
+      const res = await fetch("/api/scrape-jobs/cancel-all", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok || !data?.success) {
+        alert(data?.error || "전체 중단 요청 실패");
+        return;
+      }
+      alert(data.message || "전체 중단 완료");
+      await fetchJobs();
+    } finally {
+      setCancellingAll(false);
     }
   };
 
@@ -1064,7 +1082,18 @@ export default function DashboardPage() {
         </section>
 
         <section className="bg-white border border-slate-200 rounded-2xl p-5 space-y-3">
-          <h2 className="text-lg font-semibold text-black">실행/진행 상황</h2>
+          <div className="flex items-center justify-between">
+            <h2 className="text-lg font-semibold text-black">실행/진행 상황</h2>
+            {jobs.some(j => j.status === "RUNNING" || j.status === "QUEUED") && (
+              <button
+                className="px-3 py-1.5 bg-red-600 text-white text-xs font-semibold rounded-lg hover:bg-red-700 transition-colors disabled:opacity-50"
+                onClick={cancelAllJobs}
+                disabled={cancellingAll}
+              >
+                {cancellingAll ? "중단 중..." : "🛑 전체 중단"}
+              </button>
+            )}
+          </div>
           {jobsLoading ? <p className="text-sm text-slate-600">작업 불러오는 중...</p> : null}
 
           {latestBatchJobs.length > 0 ? (
