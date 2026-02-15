@@ -179,8 +179,39 @@ const JOB_STATUS_LABELS: Record<string, string> = {
   CANCELLED: "중단됨",
 };
 
-function formatCellStatus(cell: JobProgressCell | null) {
-  if (!cell) return "대기";
+function formatCellStatus(
+  cell: JobProgressCell | null,
+  runningContext: {
+    isRunning: boolean;
+    isCurrent: boolean;
+    cafeIndex: number;
+    keywordIndex: number;
+    currentCafeIndex?: number;
+    currentKeywordIndex?: number;
+  }
+) {
+  if (!cell) {
+    if (!runningContext.isRunning) {
+      return "준비";
+    }
+
+    if (runningContext.isCurrent) {
+      return "대기";
+    }
+
+    const currentCafe = Number(runningContext.currentCafeIndex);
+    const currentKeyword = Number(runningContext.currentKeywordIndex);
+    if (Number.isFinite(currentCafe) && Number.isFinite(currentKeyword)) {
+      if (
+        runningContext.cafeIndex < currentCafe ||
+        (runningContext.cafeIndex === currentCafe && runningContext.keywordIndex <= currentKeyword)
+      ) {
+        return "확인중";
+      }
+    }
+    return "예정";
+  }
+
   if (cell.status === "done") {
     return `완료(${cell.collected ?? 0} / ${cell.skipped ?? 0})`;
   }
@@ -200,7 +231,7 @@ function formatCellStatus(cell: JobProgressCell | null) {
     return "중단";
   }
   if (cell.status === "queued") {
-    return "대기";
+    return "준비";
   }
   return "진행중";
 }
@@ -1079,6 +1110,22 @@ export default function DashboardPage() {
                                           const isActive =
                                             matrixData.currentCellActive?.cafeId === cafe.id &&
                                             matrixData.currentCellActive.keyword === keyword;
+                                          const runningContext = {
+                                            isRunning: true,
+                                            isCurrent: isActive,
+                                            cafeIndex,
+                                            keywordIndex,
+                                            currentCafeIndex: matrixData.currentCellActive
+                                              ? (p?.cafeIndex
+                                                  ? Number(p.cafeIndex) - 1
+                                                  : undefined)
+                                              : undefined,
+                                            currentKeywordIndex: matrixData.currentCellActive
+                                              ? (p?.keywordIndex
+                                                  ? Number(p.keywordIndex) - 1
+                                                  : undefined)
+                                              : undefined,
+                                          };
                                           return (
                                             <td
                                               key={`${job.id}-${keyword}-${cafe.id}`}
@@ -1087,7 +1134,7 @@ export default function DashboardPage() {
                                               }`}
                                             >
                                               <div className="space-y-0.5">
-                                                <span>{formatCellStatus(entry.cell)}</span>
+                                                <span>{formatCellStatus(entry.cell, runningContext)}</span>
                                                 <span className="text-[11px] text-slate-500">
                                                   {entry.cell?.filteredOut ? `필터 ${entry.cell.filteredOut} / ` : ""}
                                                   {entry.cell?.collected !== undefined ? `수집 ${entry.cell.collected}` : ""}
