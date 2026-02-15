@@ -1,16 +1,13 @@
-FROM node:20-bookworm
+# Use Playwright official image (includes Node.js & Browsers)
+FROM mcr.microsoft.com/playwright:v1.49.0-jammy
 
 WORKDIR /app
 
 # Copy package files first to leverage cache
 COPY package*.json ./
 
-# Install dependencies
+# Install dependencies (browsers are already in the image)
 RUN npm install
-
-# Install Playwright browsers and dependencies
-# --with-deps installs system dependencies required by browsers
-RUN npx playwright install chromium --with-deps
 
 # Copy the rest of the application
 COPY . .
