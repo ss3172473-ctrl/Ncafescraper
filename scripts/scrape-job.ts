@@ -113,13 +113,25 @@ async function loadStorageState(): Promise<string | StorageStateObject> {
 
   // Cloud/Worker: read encrypted storageState from DB Setting.
   const secret = process.env.APP_AUTH_SECRET || "";
+  console.log(`[debug] loadStorageState secretLen=${secret.length} secretPrefix=${secret.substring(0, 5)}...`);
+
   const row = await prisma.setting.findUnique({ where: { key: STORAGE_STATE_KEY } });
   if (!row?.value) {
     throw new Error(
       "네이버 카페 세션(storageState)이 없습니다. 대시보드에서 세션을 업로드하세요."
     );
   }
-  const json = decryptString(row.value, secret);
+
+  console.log(`[debug] loadStorageState rowValueLen=${row.value.length} rowValuePrefix=${row.value.substring(0, 20)}...`);
+
+  let json: string;
+  try {
+    json = decryptString(row.value, secret);
+  } catch (error: any) {
+    const msg = error instanceof Error ? error.message : String(error);
+    throw new Error(`세션 복호화 실패: ${msg} (secretLen=${secret.length}, valLen=${row.value.length})`);
+  }
+
   const parsed = JSON.parse(json);
   if (!isStorageStateObject(parsed)) {
     throw new Error("storageState JSON 포맷이 올바르지 않습니다. (cookies/origins 필요)");
