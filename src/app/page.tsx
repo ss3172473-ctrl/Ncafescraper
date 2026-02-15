@@ -1,11 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 type SessionInfo = {
   hasSession: boolean;
-  isValid: boolean;
-  lastChecked?: string;
+  updatedAt: string | null;
 };
 
 type JoinedCafe = {
@@ -17,36 +16,30 @@ type JoinedCafe = {
 type ScrapeJob = {
   id: string;
   status: string;
+  createdAt: string;
   keywords: string;
-  directUrls?: string | null;
-  excludeWords?: string | null;
-  fromDate?: string | null;
-  toDate?: string | null;
+  cafeIds: string;
   cafeNames: string | null;
-  cafeIds: string | null;
+  fromDate: string | null;
+  toDate: string | null;
   minViewCount: number | null;
   minCommentCount: number | null;
-  useAutoFilter: boolean;
-  excludeBoards: string | null;
   maxPosts: number;
-  resultCount: number;
-  sheetSynced: number;
+  resultCount: number | null;
+  sheetSynced: number | null;
   errorMessage: string | null;
-  createdAt: string;
-  completedAt?: string | null;
 };
 
 type JobProgressCell = {
-  cafeId?: string;
-  cafeName?: string;
-  keyword?: string;
-  status?: "queued" | "searching" | "parsing" | "done" | "failed" | "cancelled" | "skipped";
-  // Back-compat: historically used as "fetched rows". Prefer pagesScanned/pagesTarget/fetchedRows below.
-  searched?: number;
+  cafeId: string;
+  cafeName: string;
+  keyword: string;
+  status: string; // searching | parsing | done | failed | skipped
   pagesScanned?: number;
   pagesTarget?: number;
   perPage?: number;
   fetchedRows?: number;
+  searched?: number; // back-compat
   totalResults?: number;
   collected?: number;
   skipped?: number;
@@ -55,420 +48,44 @@ type JobProgressCell = {
 };
 
 type JobProgress = {
-  updatedAt?: string;
   stage?: string;
-  message?: string;
-  cafeName?: string;
   cafeId?: string;
-  cafeIndex?: number;
-  cafeTotal?: number;
+  cafeName?: string;
   keyword?: string;
-  keywordIndex?: number;
-  keywordTotal?: number;
-  url?: string;
-  urlIndex?: number;
-  urlTotal?: number;
-  candidates?: number;
-  parseAttempts?: number;
+  message?: string;
   collected?: number;
-  sheetSynced?: number;
   dbSynced?: number;
+  sheetSynced?: number;
+  updatedAt?: string;
   keywordMatrix?: Record<string, JobProgressCell>;
 };
 
+const SESSION_PANEL_OPEN_KEY = "naverCafeSessionPanelOpen:v1";
+
+function safeJsonParse<T>(raw: string | null): T | null {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    return null;
+  }
+}
+
+function parseJsonList(input: string | null): string[] {
+  if (!input) return [];
+  const parsed = safeJsonParse<unknown>(input);
+  return Array.isArray(parsed) ? parsed.map((v) => String(v || "")) : [];
+}
+
 function makePairKey(cafeId: string, keyword: string) {
-  const a = String(cafeId || "").trim().toLowerCase();
-  const b = String(keyword || "").trim().toLowerCase();
-  return `${a}::${b}`;
-}
-
-function safeParseJsonList(input: string | null) {
-  return parseJsonList(input);
-}
-
-function buildMatrixRows(job: ScrapeJob, progress: JobProgress | null) {
-  const cafes = safeParseJsonList(job.cafeIds).map((id, idx) => {
-    const names = safeParseJsonList(job.cafeNames);
-    return { id, name: names[idx] || id };
-  });
-  const keywords = safeParseJsonList(job.keywords);
-
-  const matrixRaw = progress?.keywordMatrix;
-  const matrix: Record<string, JobProgressCell> =
-    matrixRaw && typeof matrixRaw === "object" && !Array.isArray(matrixRaw)
-      ? matrixRaw
-      : {};
-
-  let totalCollected = 0;
-  let totalSkipped = 0;
-  let totalFiltered = 0;
-  Object.values(matrix).forEach((cell) => {
-    totalCollected += Number(cell?.collected || 0);
-    totalSkipped += Number(cell?.skipped || 0);
-    totalFiltered += Number(cell?.filteredOut || 0);
-  });
-
-  const progressCafeIndex = Number(progress?.cafeIndex) || 0;
-  const progressKeywordIndex = Number(progress?.keywordIndex) || 0;
-
-  const resolvedCafeId = (progress?.cafeId && String(progress.cafeId).trim()) ||
-    (progressCafeIndex >= 1 && progressCafeIndex <= cafes.length ? cafes[progressCafeIndex - 1]?.id : "");
-  const resolvedKeyword = (progress?.keyword && String(progress.keyword).trim()) ||
-    (progressKeywordIndex >= 1 && progressKeywordIndex <= keywords.length ? keywords[progressKeywordIndex - 1] : keywords[0] || "");
-
-  const progressByCafe = cafes.map((cafe) =>
-    keywords.map((keyword) => {
-      const cell = matrix[makePairKey(cafe.id, keyword)] || null;
-      const active =
-        resolvedCafeId === cafe.id &&
-        resolvedKeyword === keyword &&
-        progress?.stage !== "DONE";
-      const isDone = cell?.status === "done";
-      const isSearch = cell?.status === "searching" || cell?.status === "parsing";
-
-      return {
-        cell,
-        isDone,
-        isSearch,
-        active,
-      };
-    })
-  );
-
-  const currentCollected = Number(progress?.collected || 0);
-  const effectiveCollected = totalCollected > 0 ? totalCollected : currentCollected;
-
-  return {
-    cafes,
-    keywords,
-    matrix: progressByCafe,
-    totalCollected: effectiveCollected,
-    totalSkipped,
-    totalFiltered,
-    totalFromJob: currentCollected,
-    currentCellActive:
-      resolvedCafeId && resolvedKeyword
-        ? { cafeId: resolvedCafeId, keyword: resolvedKeyword }
-        : null,
-    currentCafeIndex:
-      progressCafeIndex >= 1 && progressCafeIndex <= cafes.length
-        ? progressCafeIndex - 1
-        : undefined,
-    currentKeywordIndex:
-      progressKeywordIndex >= 1 && progressKeywordIndex <= keywords.length
-        ? progressKeywordIndex - 1
-        : undefined,
-  };
-}
-
-const EXCLUDE_BOARD_OPTIONS_STORAGE_KEY = "scrapeDashboardExcludeBoards:v1";
-const SESSION_PANEL_OPEN_KEY = "scrapeDashboardSessionPanelOpen:v1";
-const MATRIX_ORIENTATION_KEY = "scrapeDashboardMatrixOrientation:v1";
-const EXCLUDE_BOARD_OPTIONS_DEFAULT = [
-  "도치맘 핫딜공구🔛",
-  "광고",
-  "홍보",
-  "도치맘 핫딜공구",
-  "공지",
-];
-
-const STAGE_ORDER: Record<string, number> = {
-  QUEUED: 0,
-  SEARCH: 1,
-  PARSE: 2,
-  DONE: 3,
-  CANCELLED: 4,
-  FAILED: 5,
-};
-
-const PIPELINE_STEPS = ["작업 생성", "검색 실행", "본문/댓글 파싱", "저장 및 연동"];
-
-const PIPELINE_STEP_BY_STAGE: Record<string, number> = {
-  QUEUED: 0,
-  SEARCH: 1,
-  PARSE: 2,
-  DONE: 3,
-  CANCELLED: 3,
-  FAILED: 3,
-};
-
-const STAGE_LABELS: Record<string, string> = {
-  SEARCH: "검색",
-  PARSE: "본문/댓글 파싱",
-  DONE: "저장 완료",
-  CANCELLED: "중단됨",
-  FAILED: "실패",
-};
-
-const JOB_STATUS_LABELS: Record<string, string> = {
-  QUEUED: "실행 대기",
-  RUNNING: "실행 중",
-  SUCCESS: "성공",
-  FAILED: "실패",
-  CANCELLED: "중단됨",
-};
-
-function buildDisplayBadge(status: string, job: ScrapeJob, p: JobProgress | null) {
-  const normalized = normalizeStatus(status);
-  if (normalized === "SUCCESS") {
-    const resultCount = Number(job.resultCount ?? 0);
-    const maxPosts = Number(job.maxPosts ?? 0);
-    const badgeText = resultCount > 0
-      ? `✅ 완료 (${resultCount}${maxPosts > 0 ? `/${maxPosts}` : ""})`
-      : "✅ 완료";
-    return { label: badgeText, style: "bg-emerald-100 text-emerald-800" };
-  }
-
-  if (normalized === "FAILED") {
-    return { label: "실패", style: "bg-red-100 text-red-700" };
-  }
-
-  if (normalized === "CANCELLED") {
-    return { label: "중단됨", style: "bg-slate-200 text-slate-700" };
-  }
-
-  if (normalized === "RUNNING") {
-    return { label: "실행 중", style: "bg-blue-100 text-blue-800" };
-  }
-
-  if (normalized === "QUEUED") {
-    const isQueuedWithProgress = isProgressActive(p);
-    return {
-      label: isQueuedWithProgress ? "실행 중(진입 중)" : "실행 대기",
-      style: isQueuedWithProgress ? "bg-blue-100 text-blue-800" : "bg-amber-100 text-amber-800",
-    };
-  }
-
-  return { label: normalized || "대기", style: "bg-slate-100 text-slate-700" };
-}
-
-function formatCellStatus(
-  cell: JobProgressCell | null,
-  runningContext: {
-    isRunning: boolean;
-    isCurrent: boolean;
-    cafeIndex: number;
-    keywordIndex: number;
-    currentCafeIndex?: number;
-    currentKeywordIndex?: number;
-  }
-) {
-  if (!cell) {
-    if (runningContext.isCurrent) return "진행중";
-    return "예정";
-  }
-
-  if (cell.status === "done") {
-    return `✅ 완료`;
-  }
-  if (cell.status === "searching") {
-    return `🔎 검색중`;
-  }
-  if (cell.status === "parsing") {
-    return `🧩 파싱중`;
-  }
-  if (cell.status === "skipped") {
-    return `⛔ 제외`;
-  }
-  if (cell.status === "failed") {
-    return "❌ 실패";
-  }
-  if (cell.status === "cancelled") {
-    return "⏹ 중단";
-  }
-  if (cell.status === "queued") {
-    return "예정";
-  }
-  return "진행중";
-}
-
-function normalizeStatus(status: string) {
-  return String(status || "").toUpperCase();
-}
-
-const KNOWN_JOB_STATUSES = ["QUEUED", "RUNNING", "SUCCESS", "FAILED", "CANCELLED"] as const;
-
-type JobStatus = (typeof KNOWN_JOB_STATUSES)[number];
-
-function normalizeJobStatus(status: string): JobStatus {
-  const key = normalizeStatus(status);
-  if (key === "DONE") return "SUCCESS";
-  if ((KNOWN_JOB_STATUSES as readonly string[]).includes(key)) return key as JobStatus;
-  return "QUEUED";
-}
-
-function isProgressActive(progress: JobProgress | null | undefined) {
-  const stage = normalizeStatus(progress?.stage || "");
-  if (!stage) return false;
-  if (stage === "DONE" || stage === "FAILED" || stage === "CANCELLED") return false;
-  return true;
-}
-
-function mapProgressStageToStatus(
-  stage: string
-): "RUNNING" | "SUCCESS" | "FAILED" | "CANCELLED" | null {
-  const normalized = normalizeStatus(stage);
-  if (normalized === "DONE") return "SUCCESS";
-  if (normalized === "FAILED") return "FAILED";
-  if (normalized === "CANCELLED") return "CANCELLED";
-  if (normalized === "SEARCH" || normalized === "PARSE") return "RUNNING";
-  return null;
-}
-
-function resolveDisplayStatus(status: string, progress: JobProgress | null) {
-  const jobStatus = normalizeJobStatus(status);
-  const stage = normalizeStatus(progress?.stage || "");
-  const stageStatus = mapProgressStageToStatus(stage);
-
-  if (stageStatus) {
-    return stageStatus;
-  }
-
-  if (jobStatus === "RUNNING" || jobStatus === "SUCCESS" || jobStatus === "FAILED" || jobStatus === "CANCELLED") {
-    return jobStatus;
-  }
-
-  if (jobStatus === "QUEUED") {
-    if (isProgressActive(progress)) return "RUNNING";
-    return "QUEUED";
-  }
-
-  if (isProgressActive(progress)) return "RUNNING";
-  return jobStatus;
-}
-
-function getJobResultTextByStatus(
-  status: string,
-  job: ScrapeJob,
-  progress: JobProgress | null,
-  fallbackMax?: number
-) {
-  const normalized = normalizeStatus(status);
-  const dbSynced = Number(progress?.dbSynced ?? job.resultCount ?? 0);
-  const sheetSynced = Number(progress?.sheetSynced ?? job.sheetSynced ?? 0);
-  const collected = Number(progress?.collected ?? job.resultCount ?? 0);
-  const target = fallbackMax ?? job.maxPosts;
-  if (normalized === "SUCCESS") {
-    return {
-      label: `완료 (총 ${collected} / 목표 ${target})`,
-      detail: `DB ${dbSynced} / Sheet ${sheetSynced}`,
-    };
-  }
-  if (normalized === "FAILED") {
-    return {
-      label: `실패 (총 ${collected})`,
-      detail: `DB ${dbSynced} / Sheet ${sheetSynced}`,
-    };
-  }
-  if (normalized === "CANCELLED") {
-    return {
-      label: `중단 (총 ${collected})`,
-      detail: `DB ${dbSynced} / Sheet ${sheetSynced}`,
-    };
-  }
-  if (normalized === "RUNNING" && progress) {
-    return {
-      label: `실행 중`,
-      detail: `DB ${dbSynced} / Sheet ${sheetSynced}`,
-    };
-  }
-  return {
-    label: `DB ${dbSynced} / Sheet ${sheetSynced}`,
-    detail: ``,
-  };
-}
-
-function shortenCafeName(value: string) {
-  const name = String(value || "");
-  if (name.length <= 15) return name;
-  return `${name.slice(0, 15)}...`;
-}
-
-function shortenKeyword(value: string) {
-  const v = String(value || "");
-  if (v.length <= 12) return v;
-  return `${v.slice(0, 12)}...`;
-}
-
-type MatrixOrientation = "keyword_rows" | "cafe_rows";
-
-function getStoredMatrixOrientation(): MatrixOrientation | null {
-  if (typeof window === "undefined") return null;
-  try {
-    const raw = window.localStorage.getItem(MATRIX_ORIENTATION_KEY);
-    if (raw === "keyword_rows" || raw === "cafe_rows") return raw;
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-function setStoredMatrixOrientation(next: MatrixOrientation) {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(MATRIX_ORIENTATION_KEY, next);
-  } catch {
-    // ignore
-  }
-}
-
-function getStoredSessionPanelOpen() {
-  if (typeof window === "undefined") return null;
-  try {
-    const value = window.localStorage.getItem(SESSION_PANEL_OPEN_KEY);
-    if (value === "1") return true;
-    if (value === "0") return false;
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-function setStoredSessionPanelOpen(next: boolean) {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(SESSION_PANEL_OPEN_KEY, next ? "1" : "0");
-  } catch {
-    // localStorage 예외는 무시
-  }
-}
-
-function getStageLabel(stage?: string) {
-  const key = String(stage || "").toUpperCase();
-  return STAGE_LABELS[key] || "대기/준비";
-}
-
-function getStageIndex(stage?: string) {
-  const key = String(stage || "").toUpperCase();
-  return STAGE_ORDER[key] ?? 0;
-}
-
-function getProgressPercent(stage?: string) {
-  const key = String(stage || "").toUpperCase();
-  if (key === "DONE") return 100;
-  const idx = getStageIndex(key);
-  if (idx <= 1) return Math.min(45, idx * 18 + 2);
-  if (idx === 2) return 60;
-  if (idx >= 3) return 100;
-  return 8;
-}
-
-function getPipelineIndex(stage?: string) {
-  const key = String(stage || "").toUpperCase();
-  return PIPELINE_STEP_BY_STAGE[key] ?? 0;
-}
-
-function isFinishedStage(stage?: string) {
-  const key = String(stage || "").toUpperCase();
-  return key === "DONE" || key === "CANCELLED" || key === "FAILED";
+  return `${String(cafeId || "").trim()}::${String(keyword || "").trim()}`;
 }
 
 function formatAgo(iso?: string) {
   if (!iso) return "-";
-  const now = new Date();
   const t = new Date(iso).getTime();
   if (Number.isNaN(t)) return "-";
-  const diffMs = Math.max(0, now.getTime() - t);
+  const diffMs = Math.max(0, Date.now() - t);
   const sec = Math.floor(diffMs / 1000);
   if (sec < 60) return `${sec}초 전`;
   const min = Math.floor(sec / 60);
@@ -479,234 +96,258 @@ function formatAgo(iso?: string) {
   return `${day}일 전`;
 }
 
-function parseJsonList(input: string | null): string[] {
-  if (!input) return [];
-  try {
-    return JSON.parse(input);
-  } catch {
-    return [];
+function shortenCafeName(name: string, max = 15) {
+  const s = String(name || "");
+  if (s.length <= max) return s;
+  return s.slice(0, max) + "...";
+}
+
+function normalizeKeyword(input: string) {
+  // Keep Korean/English as-is, just normalize spaces.
+  return String(input || "").trim().replace(/\s+/g, "");
+}
+
+function uniq<T>(arr: T[]) {
+  const out: T[] = [];
+  const seen = new Set<string>();
+  for (const v of arr) {
+    const k = String(v);
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(v);
   }
+  return out;
+}
+
+function computeDateRange(preset: "1m" | "3m" | "6m" | "1y" | "2y" | "all") {
+  if (preset === "all") return { fromDate: null as string | null, toDate: null as string | null };
+  const now = new Date();
+  const to = new Date(now);
+  const from = new Date(now);
+  if (preset === "1m") from.setMonth(from.getMonth() - 1);
+  if (preset === "3m") from.setMonth(from.getMonth() - 3);
+  if (preset === "6m") from.setMonth(from.getMonth() - 6);
+  if (preset === "1y") from.setFullYear(from.getFullYear() - 1);
+  if (preset === "2y") from.setFullYear(from.getFullYear() - 2);
+
+  const asYmd = (d: Date) => {
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, "0");
+    const dd = String(d.getDate()).padStart(2, "0");
+    return `${yyyy}-${mm}-${dd}`;
+  };
+
+  return { fromDate: asYmd(from), toDate: asYmd(to) };
+}
+
+function keywordToQueryString(keywords: string[]) {
+  return keywords.join(", ");
+}
+
+function resolveDisplayStatus(jobStatus: string, progress: JobProgress | null): "QUEUED" | "RUNNING" | "SUCCESS" | "FAILED" | "CANCELLED" {
+  const js = String(jobStatus || "").toUpperCase();
+  if (js === "RUNNING") return "RUNNING";
+  if (js === "QUEUED") return "QUEUED";
+  if (js === "SUCCESS" || js === "DONE") return "SUCCESS";
+  if (js === "FAILED") return "FAILED";
+  if (js === "CANCELLED") return "CANCELLED";
+  // Worker sometimes writes stage when job row isn't updated yet.
+  const st = String(progress?.stage || "").toUpperCase();
+  if (st === "DONE") return "SUCCESS";
+  if (st === "FAILED") return "FAILED";
+  if (st === "CANCELLED") return "CANCELLED";
+  if (st) return "RUNNING";
+  return "QUEUED";
+}
+
+function cellStatusLabel(cell: JobProgressCell | null, jobStatus: "QUEUED" | "RUNNING" | "SUCCESS" | "FAILED" | "CANCELLED", isCurrent: boolean) {
+  if (cell) {
+    const s = String(cell.status || "").toLowerCase();
+    if (s === "done") return "완료";
+    if (s === "failed") return "실패";
+    if (s === "skipped") return "스킵";
+    if (s === "parsing") return "파싱";
+    if (s === "searching") return isCurrent ? "실행" : "대기";
+    return isCurrent ? "실행" : "대기";
+  }
+  if (jobStatus === "SUCCESS") return "완료";
+  if (jobStatus === "FAILED") return "실패";
+  if (jobStatus === "CANCELLED") return "중단";
+  if (jobStatus === "RUNNING") return isCurrent ? "실행" : "대기";
+  return "대기";
+}
+
+function cellMetaLine(cell: JobProgressCell | null) {
+  if (!cell) return "-";
+  const c = Number(cell.collected ?? 0) || 0;
+  const s = Number(cell.skipped ?? 0) || 0;
+  const f = Number(cell.filteredOut ?? 0) || 0;
+  return `수집 ${c} / 스킵 ${s} / 필터 ${f}`;
+}
+
+function cellPagesLine(cell: JobProgressCell | null) {
+  if (!cell) return "";
+  const scanned = Number(cell.pagesScanned ?? 0) || 0;
+  const target = Number(cell.pagesTarget ?? 0) || 0;
+  const fetched =
+    typeof cell.fetchedRows === "number"
+      ? cell.fetchedRows
+      : (typeof cell.searched === "number" ? cell.searched : null);
+  if (target > 0) return `페이지 ${scanned}/${target}${fetched !== null ? ` (fetched ${fetched})` : ""}`;
+  if (fetched !== null) return `fetched ${fetched}`;
+  return "";
+}
+
+function getStoredSessionPanelOpen(): boolean | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const v = window.localStorage.getItem(SESSION_PANEL_OPEN_KEY);
+    if (v === null) return null;
+    return v === "1";
+  } catch {
+    return null;
+  }
+}
+
+function setStoredSessionPanelOpen(open: boolean) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(SESSION_PANEL_OPEN_KEY, open ? "1" : "0");
+  } catch {
+    // ignore
+  }
+}
+
+function KeywordInput({
+  value,
+  onChange,
+}: {
+  value: string[];
+  onChange: (next: string[]) => void;
+}) {
+  const [draft, setDraft] = useState("");
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  const addTokens = useCallback(
+    (raw: string) => {
+      const tokens = raw
+        .split(",")
+        .map((t) => normalizeKeyword(t))
+        .filter(Boolean);
+      if (tokens.length === 0) return;
+      onChange(uniq([...value, ...tokens]));
+    },
+    [value, onChange]
+  );
+
+  const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Enter" || e.key === ",") {
+      e.preventDefault();
+      addTokens(draft);
+      setDraft("");
+    }
+    if (e.key === "Backspace" && draft.trim() === "" && value.length > 0) {
+      onChange(value.slice(0, -1));
+    }
+  };
+
+  const removeToken = (token: string) => {
+    onChange(value.filter((v) => v !== token));
+  };
+
+  return (
+    <div className="border border-slate-200 rounded-lg p-2 bg-white">
+      <div className="flex flex-wrap gap-2">
+        {value.map((kw) => (
+          <button
+            key={kw}
+            type="button"
+            onClick={() => removeToken(kw)}
+            className="px-2 py-1 text-sm rounded-full bg-slate-900 text-white"
+            title="클릭하면 삭제"
+          >
+            #{kw}
+          </button>
+        ))}
+        <input
+          ref={inputRef}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={onKeyDown}
+          placeholder="키워드 입력 후 Enter (또는 ,)"
+          className="flex-1 min-w-[220px] px-2 py-1 text-sm outline-none text-black"
+        />
+      </div>
+      <div className="mt-2 flex gap-2">
+        <button
+          type="button"
+          className="px-2 py-1 text-xs rounded bg-slate-100 text-slate-700"
+          onClick={() => {
+            addTokens(draft);
+            setDraft("");
+            inputRef.current?.focus();
+          }}
+        >
+          추가
+        </button>
+        <button
+          type="button"
+          className="px-2 py-1 text-xs rounded bg-slate-100 text-slate-700"
+          onClick={() => {
+            setDraft("");
+            onChange([]);
+            inputRef.current?.focus();
+          }}
+        >
+          전체삭제
+        </button>
+        <span className="px-2 py-1 text-xs text-slate-600">키워드 개수: {value.length}</span>
+      </div>
+    </div>
+  );
 }
 
 export default function DashboardPage() {
   const [session, setSession] = useState<SessionInfo | null>(null);
   const [sessionLoading, setSessionLoading] = useState(true);
+  const [isSessionOpen, setIsSessionOpen] = useState(true);
   const [storageStateText, setStorageStateText] = useState("");
   const [savingSession, setSavingSession] = useState(false);
-  const [isSessionOpen, setIsSessionOpen] = useState(true);
-  const [matrixOrientation, setMatrixOrientation] = useState<MatrixOrientation>("keyword_rows");
-  const [hideActiveJobCards, setHideActiveJobCards] = useState(true);
 
   const [cafes, setCafes] = useState<JoinedCafe[]>([]);
   const [cafesLoading, setCafesLoading] = useState(false);
   const [cafesError, setCafesError] = useState<string | null>(null);
   const [selectedCafeIds, setSelectedCafeIds] = useState<string[]>([]);
 
+  const [keywords, setKeywords] = useState<string[]>([]);
+  const [datePreset, setDatePreset] = useState<"1m" | "3m" | "6m" | "1y" | "2y" | "all">("1y");
+  const [minViewCount, setMinViewCount] = useState<string>("100");
+  const [minCommentCount, setMinCommentCount] = useState<string>("5");
+  const [maxPostsTotal, setMaxPostsTotal] = useState<string>(""); // keep blank by default
+  const [creating, setCreating] = useState(false);
+
   const [jobs, setJobs] = useState<ScrapeJob[]>([]);
   const [jobsLoading, setJobsLoading] = useState(true);
-
-  const [keywords, setKeywords] = useState("");
-  const [directUrlsText, setDirectUrlsText] = useState("");
-  const [excludeKeywordsText, setExcludeKeywordsText] = useState("");
-  const [datePreset, setDatePreset] = useState<"1m" | "3m" | "6m" | "1y" | "2y" | "all">("3m");
-  const [excludeBoardCandidates, setExcludeBoardCandidates] = useState<string[]>(() => EXCLUDE_BOARD_OPTIONS_DEFAULT);
-  const [selectedExcludeBoards, setSelectedExcludeBoards] = useState<string[]>([]);
-  const [customExcludeBoard, setCustomExcludeBoard] = useState("");
-  const [excludeBoardLoading, setExcludeBoardLoading] = useState(false);
-  const [excludeBoardError, setExcludeBoardError] = useState<string | null>(null);
-  const [minViewCount, setMinViewCount] = useState("");
-  const [minCommentCount, setMinCommentCount] = useState("");
-  const [useAutoFilter, setUseAutoFilter] = useState(true);
-  const [maxPostsInput, setMaxPostsInput] = useState("");
-  const [creating, setCreating] = useState(false);
-  const [startingJobId, setStartingJobId] = useState<string | null>(null);
   const [progressByJobId, setProgressByJobId] = useState<Record<string, JobProgress | null>>({});
   const [cancellingJobId, setCancellingJobId] = useState<string | null>(null);
 
-  const activeJobs = useMemo(() => {
-    return jobs.filter((job) => {
-      const p = progressByJobId[job.id] || null;
-      const display = resolveDisplayStatus(job.status, p);
-      return display === "RUNNING" || display === "QUEUED";
-    });
-  }, [jobs, progressByJobId]);
-
-  const buildJobSignature = useCallback((job: ScrapeJob) => {
-    // Used to group split jobs into one "batch" view (same conditions, created around the same time).
-    return [
-      job.keywords || "",
-      job.directUrls || "",
-      job.excludeWords || "",
-      job.fromDate || "",
-      job.toDate || "",
-      String(job.minViewCount ?? ""),
-      String(job.minCommentCount ?? ""),
-      job.useAutoFilter ? "1" : "0",
-      job.excludeBoards || "",
-    ].join("|");
+  useEffect(() => {
+    const stored = getStoredSessionPanelOpen();
+    if (stored !== null) {
+      setIsSessionOpen(stored);
+    }
   }, []);
-
-  const latestBatchJobs = useMemo(() => {
-    if (jobs.length <= 1) return [];
-    const sorted = jobs
-      .slice()
-      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-    const ref = sorted[0];
-    if (!ref) return [];
-    const refSig = buildJobSignature(ref);
-    const refTime = new Date(ref.createdAt).getTime();
-    const windowMs = 1000 * 60 * 10; // 10 minutes
-    return sorted.filter((j) => {
-      const t = new Date(j.createdAt).getTime();
-      return Math.abs(t - refTime) <= windowMs && buildJobSignature(j) === refSig;
-    });
-  }, [jobs, buildJobSignature]);
-
-  const getJobUiState = useCallback(
-    (statusKey: string, jobId: string) => {
-      const normalized = normalizeStatus(statusKey);
-      if (normalized === "RUNNING") {
-        if (cancellingJobId === jobId) return { label: "중단 요청 중", disabled: true };
-        return { label: "중단", disabled: false };
-      }
-      if (normalized === "QUEUED") {
-        if (startingJobId === jobId) return { label: "실행 요청 중", disabled: true };
-        return { label: "시작 대기", disabled: false };
-      }
-      if (startingJobId === jobId) return { label: "재실행 요청 중", disabled: true };
-      return { label: "재실행", disabled: false };
-    },
-    [cancellingJobId, startingJobId]
-  );
-
-  const getStatusBadgeClass = useCallback((status: string) => {
-    const key = String(status || "").toUpperCase();
-    if (key === "RUNNING") return "bg-blue-100 text-blue-800";
-    if (key === "QUEUED") return "bg-amber-100 text-amber-800";
-    if (key === "SUCCESS") return "bg-emerald-100 text-emerald-800";
-    if (key === "FAILED") return "bg-red-100 text-red-700";
-    if (key === "CANCELLED") return "bg-slate-200 text-slate-700";
-    return "bg-slate-100 text-slate-700";
-  }, []);
-
-  const keywordCount = useMemo(() => {
-    const list = keywords
-      .split(",")
-      .map((v) => v.trim())
-      .filter(Boolean);
-    return list.length;
-  }, [keywords]);
-
-  const directUrlCount = useMemo(() => {
-    const list = directUrlsText
-      .split(/\r?\n/)
-      .map((v) => v.trim())
-      .filter(Boolean);
-    return list.length;
-  }, [directUrlsText]);
-
-  const recommendedMaxPosts = useMemo(() => {
-    // Practical default: keep jobs reasonably small to avoid timeouts / rate-limit.
-    // Users can raise it, but we show a safe recommendation.
-    if (selectedCafeIds.length === 0) return 80;
-    if (keywordCount >= 200) return 30;
-    if (keywordCount >= 80) return 50;
-    if (keywordCount >= 30) return 60;
-    return 80;
-  }, [keywordCount, selectedCafeIds.length]);
-
-  const normalizeExcludeBoardValue = useCallback((value: string) => value.trim().replace(/\s+/g, " "), []);
-
-  const saveExcludeBoardsPreference = useCallback(
-    (values: string[]) => {
-      if (typeof window === "undefined") return;
-      try {
-        window.localStorage.setItem(
-          EXCLUDE_BOARD_OPTIONS_STORAGE_KEY,
-          JSON.stringify(values)
-        );
-      } catch {
-        // 브라우저 환경에서 localStorage 예외는 무시
-      }
-    },
-    []
-  );
-
-  const addExcludeBoard = useCallback(
-    (value: string) => {
-      const next = normalizeExcludeBoardValue(value);
-      if (!next) return;
-
-      const lower = next.toLowerCase();
-      const nextUnique = (prev: string[]) => {
-        if (prev.some((item) => item.toLowerCase() === lower)) return prev;
-        return [...prev, next];
-      };
-
-      setSelectedExcludeBoards((prev) => {
-        const updated = nextUnique(prev);
-        if (updated.length !== prev.length) {
-          saveExcludeBoardsPreference(updated);
-        }
-        return updated;
-      });
-
-      setExcludeBoardCandidates((prev) => nextUnique(prev));
-      setCustomExcludeBoard("");
-    },
-    [normalizeExcludeBoardValue, saveExcludeBoardsPreference]
-  );
-
-  const removeExcludeBoard = useCallback((value: string) => {
-    const next = selectedExcludeBoards.filter((item) => item !== value);
-    setSelectedExcludeBoards(next);
-    saveExcludeBoardsPreference(next);
-  }, [selectedExcludeBoards, saveExcludeBoardsPreference]);
-
-  const computeDateRange = useCallback(
-    (preset: "1m" | "3m" | "6m" | "1y" | "2y" | "all") => {
-      if (preset === "all") return { fromDate: null as string | null, toDate: null as string | null };
-      const now = new Date();
-      const to = new Date(now);
-      const from = new Date(now);
-      if (preset === "1m") from.setMonth(from.getMonth() - 1);
-      if (preset === "3m") from.setMonth(from.getMonth() - 3);
-      if (preset === "6m") from.setMonth(from.getMonth() - 6);
-      if (preset === "1y") from.setFullYear(from.getFullYear() - 1);
-      if (preset === "2y") from.setFullYear(from.getFullYear() - 2);
-
-      const asYmd = (d: Date) => {
-        const yyyy = d.getFullYear();
-        const mm = String(d.getMonth() + 1).padStart(2, "0");
-        const dd = String(d.getDate()).padStart(2, "0");
-        return `${yyyy}-${mm}-${dd}`;
-      };
-
-      return { fromDate: asYmd(from), toDate: asYmd(to) };
-    },
-    []
-  );
-
-  const selectedCafes = useMemo(
-    () => cafes.filter((cafe) => selectedCafeIds.includes(cafe.cafeId)),
-    [cafes, selectedCafeIds]
-  );
 
   const fetchSession = useCallback(async () => {
     try {
       setSessionLoading(true);
       const res = await fetch("/api/session");
       const data = await res.json();
-      if (data.success) {
+      if (data?.success) {
         setSession(data.data);
-        const userPreference = getStoredSessionPanelOpen();
-        if (userPreference === null) {
+        const userPref = getStoredSessionPanelOpen();
+        if (userPref === null) {
           setIsSessionOpen(!data.data?.hasSession);
-        }
-      } else {
-        const userPreference = getStoredSessionPanelOpen();
-        if (userPreference === null) {
-          setIsSessionOpen(true);
         }
       }
     } finally {
@@ -714,22 +355,164 @@ export default function DashboardPage() {
     }
   }, []);
 
-  const toggleSessionPanel = useCallback((next: boolean) => {
-    setIsSessionOpen(next);
-    setStoredSessionPanelOpen(next);
-  }, []);
-
-  useEffect(() => {
-    const preferred = getStoredSessionPanelOpen();
-    if (preferred !== null) {
-      setIsSessionOpen(preferred);
+  const fetchCafes = useCallback(async () => {
+    try {
+      setCafesLoading(true);
+      setCafesError(null);
+      const res = await fetch("/api/cafes");
+      const data = await res.json();
+      if (!res.ok || !data?.success) {
+        setCafes([]);
+        setSelectedCafeIds([]);
+        setCafesError(data?.error || "가입 카페 조회 실패");
+        return;
+      }
+      const list = Array.isArray(data.data) ? data.data : [];
+      setCafes(list);
+      setSelectedCafeIds([]);
+      if (list.length === 0) {
+        setCafesError("가입 카페 목록이 비어있습니다. Worker가 갱신하기 전일 수 있습니다.");
+      }
+    } finally {
+      setCafesLoading(false);
     }
   }, []);
 
-  useEffect(() => {
-    const stored = getStoredMatrixOrientation();
-    if (stored) setMatrixOrientation(stored);
+  const fetchJobs = useCallback(async () => {
+    try {
+      setJobsLoading(true);
+      const res = await fetch("/api/scrape-jobs");
+      const data = await res.json();
+      if (data?.success) setJobs(data.data);
+    } finally {
+      setJobsLoading(false);
+    }
   }, []);
+
+  const fetchProgress = useCallback(async (jobId: string) => {
+    const res = await fetch(`/api/scrape-jobs/${jobId}/progress`);
+    const data = await res.json();
+    if (!res.ok || !data?.success) return;
+    setProgressByJobId((prev) => ({ ...prev, [jobId]: data?.data?.progress || null }));
+  }, []);
+
+  useEffect(() => {
+    fetchSession();
+    fetchJobs();
+  }, [fetchSession, fetchJobs]);
+
+  // Poll jobs list (status/resultCount) so UI doesn't look stuck.
+  useEffect(() => {
+    let alive = true;
+    const tick = async () => {
+      if (!alive) return;
+      await fetchJobs();
+    };
+    const t = setInterval(tick, 5000);
+    return () => {
+      alive = false;
+      clearInterval(t);
+    };
+  }, [fetchJobs]);
+
+  // Poll progress for recent active/queued jobs.
+  const trackedJobs = useMemo(() => {
+    const recent = jobs
+      .slice()
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+      .slice(0, 10);
+    return recent.filter((j) => {
+      const p = progressByJobId[j.id] || null;
+      const st = resolveDisplayStatus(j.status, p);
+      return st === "RUNNING" || st === "QUEUED";
+    });
+  }, [jobs, progressByJobId]);
+
+  useEffect(() => {
+    if (trackedJobs.length === 0) return;
+    let alive = true;
+    const tick = async () => {
+      for (const j of trackedJobs) {
+        if (!alive) return;
+        await fetchProgress(j.id);
+      }
+    };
+    tick();
+    const t = setInterval(tick, 4000);
+    return () => {
+      alive = false;
+      clearInterval(t);
+    };
+  }, [trackedJobs, fetchProgress]);
+
+  // Create a "batch" = last created set of per-cafe jobs within 10 minutes, with same keywords/date/filter signature.
+  const latestBatchJobs = useMemo(() => {
+    if (jobs.length === 0) return [];
+    const sorted = jobs
+      .slice()
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    const ref = sorted[0];
+    if (!ref) return [];
+    const windowMs = 1000 * 60 * 10;
+    const refTime = new Date(ref.createdAt).getTime();
+    const sig = [
+      ref.keywords || "",
+      ref.fromDate || "",
+      ref.toDate || "",
+      String(ref.minViewCount ?? ""),
+      String(ref.minCommentCount ?? ""),
+      String(ref.maxPosts ?? ""),
+    ].join("|");
+    return sorted.filter((j) => {
+      const t = new Date(j.createdAt).getTime();
+      if (Math.abs(t - refTime) > windowMs) return false;
+      const s = [
+        j.keywords || "",
+        j.fromDate || "",
+        j.toDate || "",
+        String(j.minViewCount ?? ""),
+        String(j.minCommentCount ?? ""),
+        String(j.maxPosts ?? ""),
+      ].join("|");
+      return s === sig;
+    });
+  }, [jobs]);
+
+  const batchKeywords = useMemo(() => {
+    const first = latestBatchJobs[0];
+    return first ? parseJsonList(first.keywords).map((k) => String(k || "").trim()).filter(Boolean) : [];
+  }, [latestBatchJobs]);
+
+  const batchCafes = useMemo(() => {
+    return latestBatchJobs
+      .map((job) => {
+        const ids = parseJsonList(job.cafeIds);
+        const names = parseJsonList(job.cafeNames);
+        const cafeId = ids[0] || "";
+        const cafeName = names[0] || cafeId;
+        const p = progressByJobId[job.id] || null;
+        const st = resolveDisplayStatus(job.status, p);
+        const collected = typeof p?.collected === "number" ? p.collected : (job.resultCount ?? 0);
+        return { jobId: job.id, cafeId, cafeName, status: st, collected };
+      })
+      .filter((c) => c.cafeId);
+  }, [latestBatchJobs, progressByJobId]);
+
+  const lookupCell = useCallback(
+    (jobId: string, cafeId: string, keyword: string) => {
+      const p = progressByJobId[jobId] || null;
+      const matrix = p?.keywordMatrix;
+      if (!matrix) return null;
+      return matrix[makePairKey(cafeId, keyword)] || null;
+    },
+    [progressByJobId]
+  );
+
+  const toggleCafe = (cafeId: string) => {
+    setSelectedCafeIds((prev) =>
+      prev.includes(cafeId) ? prev.filter((id) => id !== cafeId) : [...prev, cafeId]
+    );
+  };
 
   const saveSession = async () => {
     if (!storageStateText.trim()) {
@@ -744,12 +527,13 @@ export default function DashboardPage() {
         body: JSON.stringify({ storageState: storageStateText }),
       });
       const data = await res.json();
-      if (!res.ok || !data.success) {
-        alert(data.error || "세션 저장 실패");
+      if (!res.ok || !data?.success) {
+        alert(data?.error || "세션 저장 실패");
         return;
       }
       setStorageStateText("");
-      toggleSessionPanel(false);
+      setIsSessionOpen(false);
+      setStoredSessionPanelOpen(false);
       await fetchSession();
       alert("세션 저장 완료");
     } finally {
@@ -761,418 +545,29 @@ export default function DashboardPage() {
     if (!confirm("저장된 세션을 삭제할까요?")) return;
     const res = await fetch("/api/session", { method: "DELETE" });
     const data = await res.json();
-    if (!res.ok || !data.success) {
-      alert(data.error || "세션 삭제 실패");
+    if (!res.ok || !data?.success) {
+      alert(data?.error || "세션 삭제 실패");
       return;
     }
-    toggleSessionPanel(true);
+    setIsSessionOpen(true);
+    setStoredSessionPanelOpen(true);
     await fetchSession();
     alert("세션 삭제 완료");
   };
-
-  const fetchJobs = useCallback(async () => {
-    try {
-      setJobsLoading(true);
-      const res = await fetch("/api/scrape-jobs");
-      const data = await res.json();
-      if (data.success) setJobs(data.data);
-    } finally {
-      setJobsLoading(false);
-    }
-  }, []);
-
-  const fetchProgress = useCallback(async (jobId: string) => {
-    const res = await fetch(`/api/scrape-jobs/${jobId}/progress`);
-    const data = await res.json();
-    if (!res.ok || !data.success) return;
-    const progress = data?.data?.progress || null;
-    setProgressByJobId((prev) => ({ ...prev, [jobId]: progress }));
-  }, []);
-
-  // Prefetch progress for recent jobs so "최근 작업"에서도 마지막 메시지(예: searched pages=.../4)가 보이도록 함.
-  // 이미 progress가 로드된 jobId는 다시 요청하지 않습니다.
-  useEffect(() => {
-    const ids = jobs.slice(0, 10).map((j) => j.id).filter(Boolean);
-    for (const id of ids) {
-      if (progressByJobId[id] === undefined) {
-        fetchProgress(id);
-      }
-    }
-  }, [jobs, progressByJobId, fetchProgress]);
-
-  // Ensure active/queued jobs always have a progress snapshot so the UI doesn't look blank.
-  useEffect(() => {
-    for (const job of activeJobs) {
-      if (progressByJobId[job.id] === undefined) {
-        fetchProgress(job.id);
-      }
-    }
-  }, [activeJobs, progressByJobId, fetchProgress]);
 
   const cancelJob = async (jobId: string) => {
     try {
       setCancellingJobId(jobId);
       const res = await fetch(`/api/scrape-jobs/${jobId}/cancel`, { method: "POST" });
       const data = await res.json();
-      if (!res.ok || !data.success) {
-        alert(data.error || "중단 요청 실패");
+      if (!res.ok || !data?.success) {
+        alert(data?.error || "중단 요청 실패");
         return;
       }
-      alert("중단 요청을 등록했습니다. Worker가 안전하게 종료합니다.");
-      fetchJobs();
-      fetchProgress(jobId);
+      await fetchJobs();
+      await fetchProgress(jobId);
     } finally {
       setCancellingJobId(null);
-    }
-  };
-
-  // Keep session status synced with short polling so session changes in another device/window appear immediately.
-  useEffect(() => {
-    let alive = true;
-    const tick = async () => {
-      if (!alive) return;
-      await fetchSession();
-    };
-
-    tick();
-    const t = setInterval(tick, 5000);
-    return () => {
-      alive = false;
-      clearInterval(t);
-    };
-  }, [fetchSession]);
-
-  useEffect(() => {
-    let alive = true;
-    const tick = async () => {
-      if (!alive) return;
-      await fetchJobs();
-    };
-    tick();
-    const t = setInterval(tick, 5000);
-    return () => {
-      alive = false;
-      clearInterval(t);
-    };
-  }, [fetchJobs]);
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const raw = window.localStorage.getItem(EXCLUDE_BOARD_OPTIONS_STORAGE_KEY);
-    if (!raw) return;
-    try {
-      const parsed = JSON.parse(raw);
-      if (!Array.isArray(parsed)) return;
-      const normalized = parsed
-        .map((v) => {
-          if (typeof v !== "string") return "";
-          return normalizeExcludeBoardValue(v);
-        })
-        .filter(Boolean);
-      if (normalized.length === 0) return;
-
-      setSelectedExcludeBoards(normalized);
-      setExcludeBoardCandidates((prev) => {
-        const merged = [...prev];
-        const existing = new Set(merged.map((item) => item.toLowerCase()));
-        for (const value of normalized) {
-          const key = value.toLowerCase();
-          if (!existing.has(key)) {
-            merged.push(value);
-            existing.add(key);
-          }
-        }
-        return merged;
-      });
-      saveExcludeBoardsPreference(normalized);
-    } catch {
-      // ignore
-    }
-  }, [normalizeExcludeBoardValue, saveExcludeBoardsPreference]);
-
-  const fetchCafes = async () => {
-    try {
-      setCafesLoading(true);
-      setCafesError(null);
-      const res = await fetch("/api/cafes");
-      const data = await res.json();
-      if (!res.ok || !data.success) {
-        setCafes([]);
-        setSelectedCafeIds([]);
-        setCafesError(data.error || "가입 카페 조회 실패");
-        return;
-      }
-      const list = Array.isArray(data.data) ? data.data : [];
-      setCafes(list);
-      setSelectedCafeIds([]);
-      if (list.length === 0) {
-        setCafesError("가입 카페 목록이 비어있습니다. Worker가 갱신하기 전일 수 있습니다.");
-      }
-    } finally {
-      setCafesLoading(false);
-    }
-  };
-
-  const fetchBoardCandidates = useCallback(async () => {
-    if (selectedCafeIds.length === 0) {
-      setExcludeBoardCandidates((prev) =>
-        Array.from(new Set([...prev, ...selectedExcludeBoards]))
-      );
-      setExcludeBoardError(null);
-      setExcludeBoardLoading(false);
-      return;
-    }
-
-    try {
-      setExcludeBoardLoading(true);
-      setExcludeBoardError(null);
-      const res = await fetch("/api/cafe-boards", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          cafeIds: selectedCafeIds,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok || !data.success) {
-        setExcludeBoardCandidates((prev) =>
-          Array.from(new Set([...prev, ...selectedExcludeBoards]))
-        );
-        setExcludeBoardError(data.error || "게시판 목록 조회 실패");
-        return;
-      }
-
-      const list = Array.isArray(data.data) ? data.data : [];
-      const normalized = list
-        .map((value: unknown) => String(value || "").trim())
-        .filter((value: string) => value.length > 0);
-
-      setExcludeBoardCandidates((prev) => {
-        const base = new Set(prev.map((value) => value.toLowerCase()));
-        const merged = [...normalized];
-        for (const board of selectedExcludeBoards) {
-          const normalizedBoard = board.toLowerCase();
-          if (!base.has(normalizedBoard)) {
-            merged.push(board);
-            base.add(normalizedBoard);
-          }
-        }
-        merged.sort((a, b) => a.localeCompare(b, "ko"));
-        return merged;
-      });
-    } catch (error) {
-      console.error("게시판 목록 조회 실패:", error);
-      setExcludeBoardCandidates((prev) =>
-        Array.from(new Set([...prev, ...selectedExcludeBoards]))
-      );
-      setExcludeBoardError("게시판 목록 조회 중 오류가 발생했습니다.");
-    } finally {
-      setExcludeBoardLoading(false);
-    }
-  }, [selectedCafeIds, selectedExcludeBoards]);
-
-  useEffect(() => {
-    const trackedJobs = jobs.filter((j) => {
-      const display = resolveDisplayStatus(j.status, progressByJobId[j.id] || null);
-      if (display === "RUNNING" || display === "QUEUED") return true;
-      const p = progressByJobId[j.id] || null;
-      const stage = normalizeStatus(p?.stage || "");
-      if (!stage) return false;
-      return stage !== "DONE" && stage !== "FAILED" && stage !== "CANCELLED";
-    });
-    if (trackedJobs.length === 0) return;
-
-    let alive = true;
-    const tick = async () => {
-      for (const j of trackedJobs) {
-        if (!alive) return;
-        await fetchProgress(j.id);
-      }
-    };
-
-    tick();
-    const t = setInterval(tick, 4000);
-    return () => {
-      alive = false;
-      clearInterval(t);
-    };
-  }, [jobs, progressByJobId, fetchProgress]);
-
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      fetchBoardCandidates();
-    }, 400);
-    return () => clearTimeout(timer);
-  }, [selectedCafeIds, fetchBoardCandidates]);
-
-  const toggleCafe = (cafeId: string) => {
-    setSelectedCafeIds((prev) =>
-      prev.includes(cafeId) ? prev.filter((id) => id !== cafeId) : [...prev, cafeId]
-    );
-  };
-
-  const startJob = async (jobId: string) => {
-    try {
-      setStartingJobId(jobId);
-      const res = await fetch(`/api/scrape-jobs/${jobId}/start`, { method: "POST" });
-      const data = await res.json();
-      if (!res.ok || !data.success) {
-        alert(data.error || "작업 시작 실패");
-        return;
-      }
-      fetchJobs();
-      fetchProgress(jobId);
-      alert("작업을 시작했습니다. 서버에서 계속 진행됩니다.");
-    } finally {
-      setStartingJobId(null);
-    }
-  };
-
-  const handleCreateJob = async () => {
-    if (!keywords.trim() && !directUrlsText.trim()) {
-      alert("키워드(쉼표 구분) 또는 직접 URL(줄바꿈)을 입력하세요.");
-      return;
-    }
-    if (selectedCafes.length === 0) {
-      alert("스크랩할 카페를 선택하세요.");
-      return;
-    }
-
-    try {
-      setCreating(true);
-      const { fromDate, toDate } = computeDateRange(datePreset);
-      const basePayload = {
-        keywords,
-        directUrls: directUrlsText,
-        excludeKeywords: excludeKeywordsText
-          .split(",")
-          .map((v) => v.trim())
-          .filter(Boolean),
-        excludeBoards: selectedExcludeBoards
-          .map((board) => normalizeExcludeBoardValue(board))
-          .filter(Boolean),
-        fromDate,
-        toDate,
-        minViewCount: minViewCount === "" ? null : Number(minViewCount),
-        minCommentCount: minCommentCount === "" ? null : Number(minCommentCount),
-        useAutoFilter,
-      } as const;
-
-      const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-      // If the user pasted direct URLs, do NOT split by cafe to avoid duplicating the same URLs across jobs.
-      const shouldSplitByCafe =
-        !directUrlsText.trim() && selectedCafes.length > 1;
-
-      const rawMaxPosts = maxPostsInput.trim();
-      const maxPostsTotal = rawMaxPosts === "" ? null : Number(rawMaxPosts);
-
-      const normalizeTotalMaxPosts = (value: number, cafeCount: number) => {
-        const v = Math.floor(Number(value || 0));
-        const safe = Number.isFinite(v) ? v : 0;
-        // Total is global across all split jobs. Guarantee >= cafeCount so each job can run with >=1 maxPosts.
-        const bumped = Math.max(cafeCount, safe);
-        return Math.min(300, Math.max(1, bumped));
-      };
-
-      const distributeMaxPosts = (total: number, cafeCount: number) => {
-        const base = Math.floor(total / cafeCount);
-        let rem = total - base * cafeCount;
-        return Array.from({ length: cafeCount }).map(() => {
-          const extra = rem > 0 ? 1 : 0;
-          if (rem > 0) rem -= 1;
-          return base + extra;
-        });
-      };
-
-      const postCreate = async (payload: Record<string, unknown>) => {
-        const res = await fetch("/api/scrape-jobs", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        });
-        const data = await res.json().catch(async () => {
-          const raw = await res.text().catch(() => "");
-          throw new Error(raw || "응답을 읽을 수 없습니다.");
-        });
-        if (!res.ok || !data?.success) {
-          const detail =
-            typeof data?.details === "string" && data.details.trim()
-              ? `\n\n상세: ${data.details}`
-              : "";
-          throw new Error((data?.error || "작업 생성 실패") + detail);
-        }
-        return String((data as { data?: { id?: unknown } } | undefined)?.data?.id || "");
-      };
-
-      const createdJobIds: string[] = [];
-
-      if (!shouldSplitByCafe) {
-        const jobId = await postCreate({
-          ...basePayload,
-          maxPosts: maxPostsTotal,
-          selectedCafes,
-        });
-        createdJobIds.push(jobId);
-      } else {
-        const perCafeMaxPosts =
-          maxPostsTotal === null
-            ? Array.from({ length: selectedCafes.length }).map(() => null)
-            : distributeMaxPosts(
-                normalizeTotalMaxPosts(maxPostsTotal, selectedCafes.length),
-                selectedCafes.length
-              );
-
-        const failures: Array<{ cafeName: string; cafeId: string; error: string }> = [];
-        for (let i = 0; i < selectedCafes.length; i += 1) {
-          const cafe = selectedCafes[i];
-          try {
-            const jobId = await postCreate({
-              ...basePayload,
-              maxPosts: perCafeMaxPosts[i],
-              selectedCafes: [cafe],
-            });
-            createdJobIds.push(jobId);
-          } catch (error) {
-            failures.push({
-              cafeName: String((cafe as { name?: unknown } | undefined)?.name || cafe.cafeId),
-              cafeId: cafe.cafeId,
-              error: error instanceof Error ? error.message : String(error),
-            });
-          }
-          // A tiny delay to avoid bursting requests (helps stability).
-          await sleep(150);
-        }
-
-        if (failures.length > 0) {
-          // Let the user know which cafes failed to create jobs.
-          const lines = failures
-            .slice(0, 8)
-            .map((f) => `- ${f.cafeName} (${f.cafeId}): ${String(f.error).slice(0, 120)}`);
-          const more = failures.length > 8 ? `\n... 외 ${failures.length - 8}개` : "";
-          alert(
-            `일부 카페 작업 생성에 실패했습니다. (성공 ${createdJobIds.length} / 실패 ${failures.length})\n\n실패 목록:\n${lines.join("\n")}${more}\n\n실패한 카페만 다시 선택해서 재시도해 주세요.`
-          );
-        }
-      }
-
-      await fetchJobs();
-      createdJobIds.forEach((id) => fetchProgress(id));
-
-      if (createdJobIds.length === 0) {
-        alert("작업 생성에 실패했습니다. 잠시 후 다시 시도해 주세요.");
-        return;
-      }
-
-      if (createdJobIds.length === 1) {
-        alert("작업을 큐에 등록했습니다. Worker가 순서대로 실행합니다.");
-      } else {
-        alert(
-          `카페별로 작업을 분할해 총 ${createdJobIds.length}개 작업을 큐에 등록했습니다.\nWorker가 1개씩 순서대로 실행합니다.`
-        );
-      }
-    } finally {
-      setCreating(false);
     }
   };
 
@@ -1181,667 +576,227 @@ export default function DashboardPage() {
     window.location.href = "/login";
   };
 
+  const handleCreateJobs = async () => {
+    if (keywords.length === 0) {
+      alert("키워드를 1개 이상 입력하세요.");
+      return;
+    }
+    const selected = cafes.filter((c) => selectedCafeIds.includes(c.cafeId));
+    if (selected.length === 0) {
+      alert("스크랩할 카페를 1개 이상 선택하세요.");
+      return;
+    }
+
+    const { fromDate, toDate } = computeDateRange(datePreset);
+    const payloadBase = {
+      keywords: keywordToQueryString(keywords),
+      fromDate,
+      toDate,
+      minViewCount: minViewCount.trim() === "" ? null : Number(minViewCount),
+      minCommentCount: minCommentCount.trim() === "" ? null : Number(minCommentCount),
+      // Simplified mode: do not auto-pick thresholds.
+      useAutoFilter: false,
+    } as const;
+
+    const raw = maxPostsTotal.trim();
+    const total = raw === "" ? null : Number(raw);
+
+    const normalizeTotal = (value: number, cafeCount: number) => {
+      const v = Math.floor(Number(value || 0));
+      const safe = Number.isFinite(v) ? v : 0;
+      return Math.min(300, Math.max(cafeCount, Math.max(1, safe)));
+    };
+
+    const distribute = (totalValue: number, cafeCount: number) => {
+      const base = Math.floor(totalValue / cafeCount);
+      let rem = totalValue - base * cafeCount;
+      return Array.from({ length: cafeCount }).map(() => {
+        const extra = rem > 0 ? 1 : 0;
+        if (rem > 0) rem -= 1;
+        return base + extra;
+      });
+    };
+
+    const perCafeMaxPosts =
+      total === null ? Array.from({ length: selected.length }).map(() => null) : distribute(normalizeTotal(total, selected.length), selected.length);
+
+    const postCreate = async (payload: Record<string, unknown>) => {
+      const res = await fetch("/api/scrape-jobs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok || !data?.success) {
+        throw new Error(data?.error || "작업 생성 실패");
+      }
+      return String(data?.data?.id || "");
+    };
+
+    try {
+      setCreating(true);
+      const created: string[] = [];
+      for (let i = 0; i < selected.length; i += 1) {
+        const cafe = selected[i];
+        const id = await postCreate({
+          ...payloadBase,
+          maxPosts: perCafeMaxPosts[i],
+          selectedCafes: [cafe],
+        });
+        if (id) created.push(id);
+        await new Promise((r) => setTimeout(r, 150));
+      }
+      await fetchJobs();
+      for (const id of created) {
+        fetchProgress(id);
+      }
+    } catch (e) {
+      alert(e instanceof Error ? e.message : String(e));
+    } finally {
+      setCreating(false);
+    }
+  };
+
   return (
     <main className="min-h-screen bg-slate-100 p-4 md:p-8 text-black">
       <div className="max-w-6xl mx-auto space-y-6">
         <header className="bg-white border border-slate-200 rounded-2xl p-5 flex items-center justify-between">
           <div>
-            <h1 className="text-2xl font-bold text-black">카페 아카이빙 대시보드</h1>
-            <p className="text-sm text-black">열람 가능한 글을 조건 기반으로 아카이빙하고 Google Sheets로 보냅니다.</p>
+            <h1 className="text-2xl font-bold text-black">카페 아카이빙</h1>
+            <p className="text-sm text-slate-700">
+              선택한 카페에서 키워드를 검색하고(페이지당 50개, 4페이지), 열람 가능한 글의 본문/댓글 텍스트를 Google Sheets로 보냅니다.
+            </p>
           </div>
           <button onClick={handleLogout} className="px-4 py-2 text-sm bg-slate-900 text-white rounded-lg">
             로그아웃
           </button>
         </header>
 
-        <section className="bg-white border border-slate-200 rounded-2xl p-5 space-y-4">
-          <h2 className="text-lg font-semibold text-black">실행/대기 중 작업</h2>
-          <div className="space-y-3">
-            {activeJobs.length === 0 ? (
-              <p className="text-sm text-slate-600">현재 실행/대기 중인 작업이 없습니다.</p>
-            ) : (
-              <div className="space-y-3">
-                {latestBatchJobs.length > 1 ? (
-                  <div className="border border-slate-200 rounded-lg p-3 bg-slate-50">
-                    <div className="flex items-center justify-between gap-2">
-                      <div>
-                        <p className="text-sm font-semibold text-black">통합 진행표 (카페별 분할 작업)</p>
-                        <p className="text-xs text-slate-600">
-                          카페 {latestBatchJobs.length}개 작업을 하나의 표로 합쳐서 보여줍니다. (완료/실행/대기 포함)
-                        </p>
-                      </div>
-                      <button
-                        className="px-2 py-1 text-xs rounded bg-white border border-slate-200 text-slate-700"
-                        onClick={() => setHideActiveJobCards((v) => !v)}
-                      >
-                        {hideActiveJobCards ? "작업 카드 보기" : "작업 카드 숨기기"}
-                      </button>
-                    </div>
-
-                    <div className="mt-2 grid grid-cols-1 md:grid-cols-2 gap-2">
-                      {latestBatchJobs.map((job) => {
-                        const cafeId = parseJsonList(job.cafeIds)?.[0] || job.id;
-                        const cafeName = parseJsonList(job.cafeNames)?.[0] || cafeId;
-                        const p = progressByJobId[job.id] || null;
-                        const display = resolveDisplayStatus(job.status, p);
-                        const msg = p?.message ? String(p.message) : "-";
-                        const when = p?.updatedAt ? formatAgo(p.updatedAt) : "-";
-                        const collected = typeof p?.collected === "number" ? p.collected : (job.resultCount ?? 0);
-                        return (
-                          <div key={`batch-msg-${job.id}`} className="text-xs border border-slate-200 rounded-md p-2 bg-white">
-                            <div className="font-semibold text-slate-800 truncate" title={cafeName}>
-                              {shortenCafeName(cafeName)}
-                            </div>
-                            <div className="text-slate-600">
-                              상태: {display} / 수집: {collected}
-                            </div>
-                            <div className="text-slate-600 truncate" title={msg}>
-                              메시지: {msg}
-                            </div>
-                            <div className="text-slate-500">업데이트: {when}</div>
-                          </div>
-                        );
-                      })}
-                    </div>
-
-                    {(() => {
-                      const batchKeywords = (() => {
-                        const first = latestBatchJobs[0];
-                        const list = first ? parseJsonList(first.keywords) : [];
-                        return Array.isArray(list) ? list : [];
-                      })();
-                      const cafes = latestBatchJobs
-                        .map((job) => {
-                          const ids = parseJsonList(job.cafeIds);
-                          const names = parseJsonList(job.cafeNames);
-                          const p = progressByJobId[job.id] || null;
-                          const display = resolveDisplayStatus(job.status, p);
-                          const collected = typeof p?.collected === "number" ? p.collected : (job.resultCount ?? 0);
-                          return {
-                            jobId: job.id,
-                            cafeId: ids?.[0] || "",
-                            cafeName: names?.[0] || ids?.[0] || "",
-                            status: display,
-                            collected,
-                          };
-                        })
-                        .filter((c) => c.cafeId);
-
-                      const lookupCell = (jobId: string, cafeId: string, keyword: string) => {
-                        const p = progressByJobId[jobId] || null;
-                        const matrix = p?.keywordMatrix as Record<string, JobProgressCell> | undefined;
-                        if (!matrix) return null;
-                        return matrix[makePairKey(cafeId, keyword)] || null;
-                      };
-
-                      return (
-                        <div className="mt-3 overflow-x-auto">
-                          <table className="w-full text-xs bg-white border border-slate-200 rounded-md">
-                            <thead>
-                              <tr className="text-left border-b border-slate-200">
-                                <th className="px-2 py-2">키워드 / 카페</th>
-                                {cafes.map((c) => (
-                                  <th
-                                    key={`batch-cafe-${c.cafeId}`}
-                                    className="px-2 py-2 whitespace-nowrap"
-                                    title={c.cafeName}
-                                  >
-                                    {shortenCafeName(c.cafeName)}
-                                  </th>
-                                ))}
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {batchKeywords.map((kw) => (
-                                <tr key={`batch-row-${kw}`} className="border-b border-slate-100">
-                                  <td className="px-2 py-2 font-semibold">{kw}</td>
-                                  {cafes.map((c) => {
-                                    const cell = lookupCell(c.jobId, c.cafeId, kw);
-                                    const p = progressByJobId[c.jobId] || null;
-                                    const isCurrent = p?.cafeId === c.cafeId && p?.keyword === kw && !isFinishedStage(p?.stage);
-                                    const status = cell
-                                      ? formatCellStatus(cell, {
-                                          isRunning: c.status === "RUNNING",
-                                          isCurrent,
-                                          cafeIndex: 0,
-                                          keywordIndex: 0,
-                                        })
-                                      : c.status === "SUCCESS"
-                                        ? "완료"
-                                        : c.status === "FAILED"
-                                          ? "실패"
-                                          : c.status === "CANCELLED"
-                                            ? "중단"
-                                            : c.status === "RUNNING"
-                                              ? (isCurrent ? "실행" : "대기")
-                                              : "대기";
-                                    const cNum = cell ? Number(cell.collected ?? 0) : null;
-                                    const sNum = cell ? Number(cell.skipped ?? 0) : null;
-                                    const fNum = cell ? Number(cell.filteredOut ?? 0) : null;
-                                    const pagesInfo = cell
-                                      ? (() => {
-                                          const scanned = Number(cell.pagesScanned ?? 0) || 0;
-                                          const target = Number(cell.pagesTarget ?? 0) || 0;
-                                          const fetchedRows =
-                                            typeof cell.fetchedRows === "number"
-                                              ? cell.fetchedRows
-                                              : (typeof cell.searched === "number" ? cell.searched : null);
-                                          if (target > 0) {
-                                            return `페이지 ${scanned}/${target}${fetchedRows !== null ? ` (fetched ${fetchedRows})` : ""}`;
-                                          }
-                                          return fetchedRows !== null ? `fetched ${fetchedRows}` : "";
-                                        })()
-                                      : "";
-                                    const tooltip = cell
-                                      ? [`수집 ${cNum} / 스킵 ${sNum} / 필터 ${fNum}`, pagesInfo].filter(Boolean).join(" / ")
-                                      : `${status} (작업 상태: ${c.status})`;
-                                    return (
-                                      <td
-                                        key={`batch-cell-${c.cafeId}-${kw}`}
-                                        className={`px-2 py-2 whitespace-nowrap ${isCurrent ? "bg-blue-50" : ""}`}
-                                        title={tooltip}
-                                      >
-                                        <div className="space-y-0.5">
-                                          <div>{status}</div>
-                                          <div className="text-[11px] text-slate-500">
-                                            {cell ? `수집 ${cNum} / 스킵 ${sNum} / 필터 ${fNum}` : "-"}
-                                          </div>
-                                          {cell ? (
-                                            <div className="text-[11px] text-slate-400">
-                                              {(() => {
-                                                const scanned = Number(cell.pagesScanned ?? 0) || 0;
-                                                const target = Number(cell.pagesTarget ?? 0) || 0;
-                                                const fetchedRows =
-                                                  typeof cell.fetchedRows === "number"
-                                                    ? cell.fetchedRows
-                                                    : (typeof cell.searched === "number" ? cell.searched : null);
-                                                if (target > 0) {
-                                                  return `페이지 ${scanned}/${target}${fetchedRows !== null ? ` (fetched ${fetchedRows})` : ""}`;
-                                                }
-                                                return fetchedRows !== null ? `fetched ${fetchedRows}` : "";
-                                              })()}
-                                            </div>
-                                          ) : null}
-                                        </div>
-                                      </td>
-                                    );
-                                  })}
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                        </div>
-                      );
-                    })()}
-                  </div>
-                ) : null}
-
-                {hideActiveJobCards && latestBatchJobs.length > 1 ? null : (
-                  <>
-                    {activeJobs.map((job) => {
-                      const p = progressByJobId[job.id] || null;
-                      const effectiveStatus = resolveDisplayStatus(job.status, p);
-                      const isRunning = effectiveStatus === "RUNNING";
-                      const action = getJobUiState(effectiveStatus, job.id);
-                      const statusBadge = buildDisplayBadge(effectiveStatus, job, p);
-                      const progressText =
-                        effectiveStatus === "RUNNING" || (effectiveStatus === "QUEUED" && p)
-                          ? [
-                              p?.stage ? `단계: ${getStageLabel(p.stage)}` : "단계: 대기",
-                              p?.cafeName ? `카페: ${p.cafeName}` : null,
-                              p?.keyword ? `키워드: ${p.keyword}` : null,
-                              p?.candidates ? `후보: ${p.candidates}` : null,
-                              p?.collected !== undefined ? `수집: ${p.collected}` : null,
-                              p?.dbSynced !== undefined ? `DB: ${p.dbSynced}` : null,
-                              p?.sheetSynced !== undefined ? `시트: ${p.sheetSynced}` : null,
-                              p?.message ? `메시지: ${p.message}` : null,
-                            ]
-                              .filter(Boolean)
-                              .join(" / ")
-                          : "큐에서 실행 대기";
-                      const percent = isRunning ? getProgressPercent(p?.stage) : 15;
-                      const updatedAt = p?.updatedAt ? formatAgo(p.updatedAt) : "업데이트 없음";
-                      const stepIndex = (effectiveStatus === "RUNNING" && p) ? getPipelineIndex(p?.stage) : 1;
-                      const matrixData = buildMatrixRows(job, p);
-                          const hasMatrixGrid = !!(matrixData && matrixData.keywords.length > 0 && matrixData.cafes.length > 0);
-                          // User request: avoid showing aggregated totals (총수집) in the UI.
-                          const matrixText = hasMatrixGrid ? "" : `수집 추적 중 (${p?.collected ?? 0}/${job.maxPosts})`;
-
-                          return (
-                            <div key={job.id} className="border border-slate-200 rounded-lg p-3">
-                          <div className="flex flex-wrap items-center gap-2 mb-2">
-                            <p className="font-semibold text-black">{new Date(job.createdAt).toLocaleString("ko-KR")}</p>
-                            <span className={`text-xs px-2 py-1 rounded-full ${statusBadge.style}`}>
-                              {statusBadge.label}
-                            </span>
-                            <span className="text-xs text-slate-600">업데이트: {updatedAt}</span>
-                            <span className="text-xs bg-slate-100 text-slate-700 px-2 py-1 rounded-full">
-                              {action.label}
-                            </span>
-                            {isRunning ? (
-                              <button
-                                onClick={() => cancelJob(job.id)}
-                                disabled={action.disabled && cancellingJobId === job.id}
-                                className="px-2 py-1 text-xs bg-red-600 text-white rounded disabled:opacity-50"
-                              >
-                                {action.label}
-                              </button>
-                            ) : (
-                              <button
-                                onClick={() => cancelJob(job.id)}
-                                disabled={action.disabled && cancellingJobId === job.id}
-                                className="px-2 py-1 text-xs bg-red-600 text-white rounded disabled:opacity-50"
-                              >
-                                {action.label === "시작 대기" ? "대기 취소" : "중단"}
-                              </button>
-                            )}
-                          </div>
-                          <p className="text-sm text-black truncate" title={progressText}>
-                            {progressText || "-"}
-                          </p>
-                          {matrixText ? <p className="text-xs text-slate-600 mt-1">{matrixText}</p> : null}
-                          <div className="mt-2 flex gap-2">
-                            {PIPELINE_STEPS.map((step, idx) => {
-                              const active = idx <= stepIndex;
-                              const isCurrent = isRunning ? idx === stepIndex && !isFinishedStage(p?.stage) : false;
-                              return (
-                                <span
-                                  key={step}
-                                  className={`text-xs px-2 py-1 rounded-full border ${
-                                    active
-                                      ? isCurrent
-                                        ? "bg-blue-100 border-blue-300 text-blue-800"
-                                        : "bg-emerald-100 border-emerald-300 text-emerald-800"
-                                      : "bg-slate-100 border-slate-200 text-slate-500"
-                                  }`}
-                                >
-                                  {idx + 1}. {step}
-                                </span>
-                              );
-                            })}
-                          </div>
-                          {matrixData && matrixData.keywords.length > 0 && matrixData.cafes.length > 0 ? (
-                            <div className="mt-3 overflow-x-auto">
-                              <div className="flex items-center justify-between text-xs text-slate-600 mb-1">
-                                <span>카페 x 키워드 진행표</span>
-                                <button
-                                  className="px-2 py-1 rounded bg-slate-100 text-slate-700 hover:bg-slate-200"
-                                  onClick={() => {
-                                    const next: MatrixOrientation =
-                                      matrixOrientation === "keyword_rows" ? "cafe_rows" : "keyword_rows";
-                                    setMatrixOrientation(next);
-                                    setStoredMatrixOrientation(next);
-                                  }}
-                                >
-                                  표 방향: {matrixOrientation === "keyword_rows" ? "키워드 행" : "카페 행"}
-                                </button>
-                              </div>
-
-                              {matrixOrientation === "keyword_rows" ? (
-                                <table className="w-full text-xs">
-                                  <thead>
-                                    <tr className="text-left border-b border-slate-200">
-                                      <th className="pr-2 py-1">키워드 / 카페</th>
-                                      {matrixData.cafes.map((cafe) => (
-                                        <th
-                                          key={`${job.id}-${cafe.id}`}
-                                          className="pr-2 py-1 whitespace-nowrap"
-                                          title={cafe.name}
-                                        >
-                                          {shortenCafeName(cafe.name)}
-                                        </th>
-                                      ))}
-                                    </tr>
-                                  </thead>
-                                  <tbody>
-                                    {matrixData.keywords.map((keyword, keywordIndex) => {
-                                      return (
-                                        <tr key={`${job.id}-${keyword}`} className="border-b border-slate-100">
-                                          <td className="font-semibold pr-2 py-1">{keyword}</td>
-                                          {matrixData.cafes.map((cafe, cafeIndex) => {
-                                            const entry = matrixData.matrix[cafeIndex]?.[keywordIndex] || null;
-                                            const isActive =
-                                              matrixData.currentCellActive?.cafeId === cafe.id &&
-                                              matrixData.currentCellActive.keyword === keyword;
-                                            const runningContext = {
-                                              isRunning: true,
-                                              isCurrent: isActive,
-                                              cafeIndex,
-                                              keywordIndex,
-                                              currentCafeIndex: matrixData.currentCafeIndex,
-                                              currentKeywordIndex: matrixData.currentKeywordIndex,
-                                            };
-                                            const hasCell = !!entry?.cell;
-                                            const c = hasCell ? Number(entry?.cell?.collected ?? 0) : null;
-                                            const s = hasCell ? Number(entry?.cell?.skipped ?? 0) : null;
-                                            const f = hasCell ? Number(entry?.cell?.filteredOut ?? 0) : null;
-                                            return (
-                                              <td
-                                                key={`${job.id}-${keyword}-${cafe.id}`}
-                                                className={`px-2 py-1 whitespace-nowrap ${
-                                                  isActive ? "bg-blue-50 rounded" : ""
-                                                }`}
-                                              >
-                                                <div className="space-y-0.5">
-                                                  <span>{formatCellStatus(entry?.cell ?? null, runningContext)}</span>
-                                                  <span className="text-[11px] text-slate-500">
-                                                    {hasCell ? `수집 ${c} / 스킵 ${s} / 필터 ${f}` : "-"}
-                                                  </span>
-                                                </div>
-                                              </td>
-                                            );
-                                          })}
-                                        </tr>
-                                      );
-                                    })}
-                                  </tbody>
-                                </table>
-                              ) : (
-                                <table className="w-full text-xs">
-                                  <thead>
-                                    <tr className="text-left border-b border-slate-200">
-                                      <th className="pr-2 py-1">카페 / 키워드</th>
-                                      {matrixData.keywords.map((keyword) => (
-                                        <th
-                                          key={`${job.id}-kw-${keyword}`}
-                                          className="pr-2 py-1 whitespace-nowrap"
-                                          title={keyword}
-                                        >
-                                          {shortenKeyword(keyword)}
-                                        </th>
-                                      ))}
-                                    </tr>
-                                  </thead>
-                                  <tbody>
-                                    {matrixData.cafes.map((cafe, cafeIndex) => {
-                                      return (
-                                        <tr key={`${job.id}-cafe-${cafe.id}`} className="border-b border-slate-100">
-                                          <td className="font-semibold pr-2 py-1" title={cafe.name}>
-                                            {shortenCafeName(cafe.name)}
-                                          </td>
-                                          {matrixData.keywords.map((keyword, keywordIndex) => {
-                                            const entry = matrixData.matrix[cafeIndex]?.[keywordIndex] || null;
-                                            const isActive =
-                                              matrixData.currentCellActive?.cafeId === cafe.id &&
-                                              matrixData.currentCellActive.keyword === keyword;
-                                            const runningContext = {
-                                              isRunning: true,
-                                              isCurrent: isActive,
-                                              cafeIndex,
-                                              keywordIndex,
-                                              currentCafeIndex: matrixData.currentCafeIndex,
-                                              currentKeywordIndex: matrixData.currentKeywordIndex,
-                                            };
-                                            const hasCell = !!entry?.cell;
-                                            const c = hasCell ? Number(entry?.cell?.collected ?? 0) : null;
-                                            const s = hasCell ? Number(entry?.cell?.skipped ?? 0) : null;
-                                            const f = hasCell ? Number(entry?.cell?.filteredOut ?? 0) : null;
-                                            return (
-                                              <td
-                                                key={`${job.id}-cell-${cafe.id}-${keyword}`}
-                                                className={`px-2 py-1 whitespace-nowrap ${
-                                                  isActive ? "bg-blue-50 rounded" : ""
-                                                }`}
-                                              >
-                                                <div className="space-y-0.5">
-                                                  <span>{formatCellStatus(entry?.cell ?? null, runningContext)}</span>
-                                                  <span className="text-[11px] text-slate-500">
-                                                    {hasCell ? `${c}/${s}/${f}` : "-"}
-                                                  </span>
-                                                </div>
-                                              </td>
-                                            );
-                                          })}
-                                        </tr>
-                                      );
-                                    })}
-                                  </tbody>
-                                </table>
-                              )}
-                            </div>
-                          ) : null}
-                          <div className="mt-2">
-                            <div className="w-full h-2 bg-slate-100 rounded-full overflow-hidden">
-                              <div
-                                className="h-2 bg-emerald-500 transition-all"
-                                style={{ width: `${Math.min(100, percent)}%` }}
-                              />
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </>
-                )}
-              </div>
-            )}
-          </div>
-        </section>
-
-        <section className="bg-white border border-slate-200 rounded-2xl p-5">
-          <h2 className="text-lg font-semibold text-black">1) 카페 세션 확인</h2>
-          <div className="flex items-center justify-between mt-1">
-            <p className="text-sm text-black">
-              {sessionLoading
-                ? "세션 확인 중..."
-                : session?.hasSession
-                  ? `세션 사용 가능 (${session.lastChecked ? new Date(session.lastChecked).toLocaleString("ko-KR") : "시간 정보 없음"})`
-                  : "세션 없음 (아래에 storageState JSON 업로드 필요)"}
-            </p>
+        <section className="bg-white border border-slate-200 rounded-2xl p-5 space-y-3">
+          <div className="flex items-center justify-between">
+            <h2 className="text-lg font-semibold text-black">1) 카페 세션 확인</h2>
             <button
-              onClick={() => toggleSessionPanel(!isSessionOpen)}
-              className="text-sm px-3 py-1.5 rounded-lg border border-slate-300 text-slate-700"
+              type="button"
+              className="px-2 py-1 text-xs rounded bg-slate-100 text-slate-700"
+              onClick={() => {
+                const next = !isSessionOpen;
+                setIsSessionOpen(next);
+                setStoredSessionPanelOpen(next);
+              }}
             >
-              {isSessionOpen ? "접기" : "재입력/수정"}
+              {isSessionOpen ? "닫기" : "열기"}
             </button>
           </div>
-          {isSessionOpen && (
-            <div className="mt-4 space-y-2">
-              <p className="text-xs text-black">
-                Worker가 네이버에 로그인된 상태로 접속하려면 Playwright storageState(JSON)가 필요합니다.
-                1회 생성 후 아래에 붙여넣고 저장하세요.
+
+          {sessionLoading ? (
+            <p className="text-sm text-slate-600">세션 확인 중...</p>
+          ) : session?.hasSession ? (
+            <p className="text-sm text-slate-700">세션 사용 가능 ({session.updatedAt ? new Date(session.updatedAt).toLocaleString("ko-KR") : "-"})</p>
+          ) : (
+            <p className="text-sm text-red-700">세션 없음 (storageState JSON 업로드 필요)</p>
+          )}
+
+          {isSessionOpen ? (
+            <div className="border border-slate-200 rounded-lg p-3 bg-slate-50 space-y-2">
+              <p className="text-sm text-slate-700">
+                Worker가 네이버에 로그인된 상태로 접속하려면 Playwright storageState(JSON)가 필요합니다. 1회 생성 후 아래에 붙여넣고 저장하세요.
               </p>
               <textarea
+                className="w-full h-40 p-2 text-sm border border-slate-200 rounded bg-white text-black"
+                placeholder='여기에 storageState JSON 전체를 붙여넣기 (예: {"cookies":[...],"origins":[...]})'
                 value={storageStateText}
                 onChange={(e) => setStorageStateText(e.target.value)}
-                placeholder='여기에 storageState JSON 전체를 붙여넣기 (예: {"cookies":[...],"origins":[...]})'
-                className="w-full h-40 p-3 border border-slate-200 rounded-lg text-xs font-mono text-black"
               />
-              <div className="flex items-center gap-2">
+              <div className="flex gap-2">
                 <button
+                  type="button"
+                  className="px-3 py-2 text-sm bg-slate-900 text-white rounded disabled:opacity-50"
                   onClick={saveSession}
                   disabled={savingSession}
-                  className="px-3 py-2 bg-slate-900 text-white rounded-lg text-sm disabled:opacity-50"
                 >
-                  {savingSession ? "저장 중..." : "세션 저장"}
+                  세션 저장
                 </button>
                 <button
+                  type="button"
+                  className="px-3 py-2 text-sm bg-white border border-slate-200 text-slate-800 rounded"
                   onClick={deleteSession}
-                  className="px-3 py-2 bg-slate-200 text-slate-900 rounded-lg text-sm"
                 >
                   세션 삭제
                 </button>
               </div>
             </div>
+          ) : null}
+        </section>
+
+        <section className="bg-white border border-slate-200 rounded-2xl p-5 space-y-3">
+          <h2 className="text-lg font-semibold text-black">2) 카페 선택</h2>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={fetchCafes}
+              className="px-3 py-2 text-sm bg-slate-900 text-white rounded disabled:opacity-50"
+              disabled={cafesLoading}
+            >
+              가입 카페 불러오기
+            </button>
+            <span className="text-sm text-slate-600 self-center">
+              선택 {selectedCafeIds.length}개
+            </span>
+          </div>
+          {cafesError ? <p className="text-sm text-red-700">{cafesError}</p> : null}
+          {cafes.length > 0 ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+              {cafes.map((cafe) => (
+                <label key={cafe.cafeId} className="flex items-start gap-2 p-2 border border-slate-200 rounded-lg bg-white">
+                  <input
+                    type="checkbox"
+                    checked={selectedCafeIds.includes(cafe.cafeId)}
+                    onChange={() => toggleCafe(cafe.cafeId)}
+                    className="mt-1"
+                  />
+                  <div className="min-w-0">
+                    <div className="font-semibold text-black truncate" title={cafe.name}>
+                      {cafe.name}
+                    </div>
+                    <div className="text-xs text-slate-700 break-all">{cafe.url}</div>
+                  </div>
+                </label>
+              ))}
+            </div>
+          ) : (
+            <p className="text-sm text-slate-600">카페 목록을 불러오면 여기에 표시됩니다.</p>
           )}
         </section>
 
-        <section className="bg-white border border-slate-200 rounded-2xl p-5">
-          <div className="flex items-center justify-between">
-            <h2 className="text-lg font-semibold text-black">2) 카페 선택</h2>
-            <button onClick={fetchCafes} disabled={cafesLoading} className="px-3 py-2 bg-blue-600 text-white rounded-lg text-sm disabled:opacity-50">
-              {cafesLoading ? "불러오는 중..." : "가입 카페 불러오기"}
-            </button>
-          </div>
-
-          {cafesError && <p className="text-sm text-red-600 mt-3">{cafesError}</p>}
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-4 max-h-72 overflow-y-auto">
-            {cafes.map((cafe) => {
-              const checked = selectedCafeIds.includes(cafe.cafeId);
-              return (
-                <label key={cafe.cafeId} className={`border rounded-lg p-3 cursor-pointer ${checked ? "border-blue-500 bg-blue-50" : "border-slate-200"}`}>
-                  <div className="flex items-start gap-3">
-                    <input type="checkbox" checked={checked} onChange={() => toggleCafe(cafe.cafeId)} className="mt-1" />
-                    <div className="min-w-0">
-                      <p className="font-medium text-slate-900 truncate">{cafe.name}</p>
-                      <p className="text-xs text-black truncate">{cafe.url}</p>
-                    </div>
-                  </div>
-                </label>
-              );
-            })}
-          </div>
-        </section>
-
-        <section className="bg-white border border-slate-200 rounded-2xl p-5 space-y-4">
+        <section className="bg-white border border-slate-200 rounded-2xl p-5 space-y-3">
           <h2 className="text-lg font-semibold text-black">3) 실행 조건</h2>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div className="md:col-span-2">
-              <label className="text-sm text-slate-700">키워드 목록 (쉼표 구분, 공백 자동 제거)</label>
-              <textarea
-                value={keywords}
-                onChange={(e) => setKeywords(e.target.value)}
-                className="w-full mt-1 px-3 py-2 border border-slate-300 rounded-lg min-h-[88px] text-black"
-                placeholder="공구,미개봉,한정판"
-              />
-              <div className="mt-1 text-xs text-slate-600">키워드 개수: {keywordCount}개</div>
-            </div>
 
-            <div className="md:col-span-2">
-              <label className="text-sm text-slate-700">직접 URL 목록 (줄바꿈 구분, 선택)</label>
-              <textarea
-                value={directUrlsText}
-                onChange={(e) => setDirectUrlsText(e.target.value)}
-                className="w-full mt-1 px-3 py-2 border border-slate-300 rounded-lg min-h-[88px] font-mono text-xs text-black"
-                placeholder={"예)\nhttps://cafe.naver.com/ArticleRead.nhn?clubid=...&articleid=...\nhttps://cafe.naver.com/ca-fe/cafes/.../articles/..."}
-              />
-              <div className="mt-1 text-xs text-slate-600">URL 개수: {directUrlCount}개 (입력 시 검색 대신 이 URL만 스크랩)</div>
-            </div>
+          <div className="space-y-1">
+            <label className="text-sm text-slate-700">키워드 목록 (쉼표 구분, 공백 자동 제거)</label>
+            <KeywordInput value={keywords} onChange={setKeywords} />
+          </div>
 
-            <div>
-              <label className="text-sm text-slate-700">제외 단어</label>
-              <input value={excludeKeywordsText} onChange={(e) => setExcludeKeywordsText(e.target.value)} className="w-full mt-1 px-3 py-2 border border-slate-300 rounded-lg text-black" placeholder="판매완료,홍보" />
-            </div>
-
-            <div>
-              <div className="flex items-center justify-between gap-2">
-                <label className="text-sm text-slate-700">제외 게시판 (드롭다운에서 선택, 수동 입력 가능)</label>
-                <button
-                  type="button"
-                  onClick={() => fetchBoardCandidates()}
-                  disabled={excludeBoardLoading || selectedCafeIds.length === 0}
-                  className="px-2 py-1 text-xs bg-slate-900 text-white rounded-md disabled:opacity-50"
-                >
-                  {excludeBoardLoading ? "불러오는 중..." : "게시판 갱신"}
-                </button>
-              </div>
-              {selectedCafeIds.length === 0 ? (
-                <p className="mt-1 text-xs text-slate-600">
-                  먼저 카페를 선택하면 해당 카페 실제 게시판을 불러옵니다. (키워드와 무관)
-                </p>
-              ) : excludeBoardLoading ? (
-                <p className="mt-1 text-xs text-slate-600">실제 게시판 목록을 조회하는 중입니다...</p>
-              ) : null}
-              {excludeBoardError ? <p className="mt-1 text-xs text-red-600">오류: {excludeBoardError}</p> : null}
-              <div className="mt-1 grid grid-cols-1 md:grid-cols-[2fr_1fr] gap-2">
-                <select
-                  value=""
-                  onChange={(e) => {
-                    const value = e.target.value;
-                    if (!value) return;
-                    addExcludeBoard(value);
-                    (e.target as HTMLSelectElement).value = "";
-                  }}
-                  className="w-full px-3 py-2 border border-slate-300 rounded-lg text-black bg-white"
-                >
-                  <option value="">게시판 선택</option>
-                  {excludeBoardCandidates
-                    .filter((candidate) => !selectedExcludeBoards.includes(candidate))
-                    .map((candidate) => (
-                      <option key={candidate} value={candidate}>
-                        {candidate}
-                      </option>
-                    ))}
-                </select>
-
-                <div className="flex gap-2">
-                  <input
-                    value={customExcludeBoard}
-                    onChange={(e) => setCustomExcludeBoard(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key !== "Enter") return;
-                      e.preventDefault();
-                      addExcludeBoard(customExcludeBoard);
-                    }}
-                    className="w-full px-3 py-2 border border-slate-300 rounded-lg text-black"
-                    placeholder="예) 광고게시판, 핫딜공구"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => addExcludeBoard(customExcludeBoard)}
-                    className="px-3 py-2 text-sm bg-slate-900 text-white rounded-lg"
-                  >
-                    추가
-                  </button>
-                </div>
-              </div>
-              <div className="mt-2 flex flex-wrap gap-2">
-                {selectedExcludeBoards.length === 0 ? (
-                  <span className="text-xs text-slate-600">선택된 제외 게시판이 없습니다.</span>
-                ) : (
-                  selectedExcludeBoards.map((board) => (
-                    <span
-                      key={board}
-                      className="inline-flex items-center gap-2 px-2 py-1 text-xs bg-slate-100 text-slate-700 rounded-full"
-                    >
-                      {board}
-                      <button
-                        type="button"
-                        onClick={() => removeExcludeBoard(board)}
-                        className="text-slate-500 hover:text-red-600"
-                        aria-label={`${board} 제거`}
-                      >
-                        ✕
-                      </button>
-                    </span>
-                  ))
-                )}
-              </div>
-              <div className="mt-1 text-xs text-slate-600">
-                입력 시 해당 게시판 글을 검색 후보에서 미리 제외합니다.
-              </div>
-            </div>
-
-            <div>
-              <label className="text-sm text-slate-700">최소 조회수</label>
-              <input type="number" min={0} value={minViewCount} onChange={(e) => setMinViewCount(e.target.value)} className="w-full mt-1 px-3 py-2 border border-slate-300 rounded-lg text-black" />
-            </div>
-
-            <div>
-              <label className="text-sm text-slate-700">최소 댓글수</label>
-              <input type="number" min={0} value={minCommentCount} onChange={(e) => setMinCommentCount(e.target.value)} className="w-full mt-1 px-3 py-2 border border-slate-300 rounded-lg text-black" />
-            </div>
-
-            <div>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <div className="space-y-1">
               <label className="text-sm text-slate-700">기간</label>
-                <select
-                  value={datePreset}
-                  onChange={(e) =>
-                    setDatePreset(
-                      e.target.value as "1m" | "3m" | "6m" | "1y" | "2y" | "all"
-                    )
+              <select
+                className="w-full border border-slate-200 rounded px-2 py-2 text-sm bg-white text-black"
+                value={datePreset}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  if (v === "1m" || v === "3m" || v === "6m" || v === "1y" || v === "2y" || v === "all") {
+                    setDatePreset(v);
                   }
-                  className="w-full mt-1 px-3 py-2 border border-slate-300 rounded-lg bg-white text-black"
-                >
+                }}
+              >
                 <option value="1m">최근 1개월</option>
                 <option value="3m">최근 3개월</option>
                 <option value="6m">최근 6개월</option>
                 <option value="1y">최근 1년</option>
                 <option value="2y">최근 2년</option>
-                <option value="all">전체 (기간 제한 없음)</option>
+                <option value="all">전체</option>
               </select>
-              <div className="mt-1 text-xs text-slate-600">
+              <div className="text-xs text-slate-600">
                 {(() => {
                   const r = computeDateRange(datePreset);
                   if (!r.fromDate || !r.toDate) return "기간 제한 없음";
@@ -1850,176 +805,148 @@ export default function DashboardPage() {
               </div>
             </div>
 
-            <div>
-              <label className="text-sm text-slate-700">최대 수집 글 수</label>
+            <div className="space-y-1">
+              <label className="text-sm text-slate-700">최소 조회수</label>
               <input
-                type="number"
-                min={1}
-                max={300}
-                value={maxPostsInput}
-                placeholder={`${recommendedMaxPosts}`}
-                onChange={(e) => setMaxPostsInput(e.target.value)}
-                className="w-full mt-1 px-3 py-2 border border-slate-300 rounded-lg text-black"
+                className="w-full border border-slate-200 rounded px-2 py-2 text-sm bg-white text-black"
+                value={minViewCount}
+                onChange={(e) => setMinViewCount(e.target.value)}
+                placeholder="예: 100"
               />
-              <div className="mt-1 text-xs text-slate-600">
-                권장: {recommendedMaxPosts} (절대 상한: 300). 키워드/카페가 많으면 낮게 잡는 게 안정적입니다.
-              </div>
             </div>
 
-            <div className="flex items-center gap-2 mt-7">
-              <input id="autoFilter" type="checkbox" checked={useAutoFilter} onChange={(e) => setUseAutoFilter(e.target.checked)} />
-              <label htmlFor="autoFilter" className="text-sm text-slate-700">카페별 자동 임계치 사용</label>
+            <div className="space-y-1">
+              <label className="text-sm text-slate-700">최소 댓글수</label>
+              <input
+                className="w-full border border-slate-200 rounded px-2 py-2 text-sm bg-white text-black"
+                value={minCommentCount}
+                onChange={(e) => setMinCommentCount(e.target.value)}
+                placeholder="예: 5"
+              />
             </div>
           </div>
 
-          <div className="text-sm text-slate-600">선택 카페: {selectedCafes.length}개</div>
+          <div className="space-y-1">
+            <label className="text-sm text-slate-700">최대 수집 글 수 (전체 합산, 비워두면 기본값)</label>
+            <input
+              className="w-full border border-slate-200 rounded px-2 py-2 text-sm bg-white text-black"
+              value={maxPostsTotal}
+              onChange={(e) => setMaxPostsTotal(e.target.value)}
+              placeholder="예: 300 (빈칸 가능)"
+            />
+            <div className="text-xs text-slate-600">권장: 60 (절대 상한: 300). 카페/키워드가 많으면 낮게 잡는 게 안정적입니다.</div>
+          </div>
 
-          <button onClick={handleCreateJob} disabled={creating} className="px-4 py-2 bg-emerald-600 text-white rounded-lg disabled:opacity-50">
-            {creating ? "등록/시작 중..." : "작업 등록 후 즉시 실행"}
+          <button
+            type="button"
+            className="px-4 py-2 text-sm bg-emerald-700 text-white rounded disabled:opacity-50"
+            onClick={handleCreateJobs}
+            disabled={creating}
+          >
+            작업 등록 (카페별로 분할)
           </button>
         </section>
 
-        <section className="bg-white border border-slate-200 rounded-2xl p-5">
-          <h2 className="text-lg font-semibold text-black mb-4">최근 작업</h2>
-          {jobsLoading ? (
-            <p className="text-sm text-black">불러오는 중...</p>
-          ) : jobs.length === 0 ? (
-            <p className="text-sm text-black">등록된 작업이 없습니다.</p>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-slate-200 text-black">
-                    <th className="text-left py-2">생성일</th>
-                    <th className="text-left py-2">키워드</th>
-                    <th className="text-left py-2">카페</th>
-                    <th className="text-left py-2">필터</th>
-                    <th className="text-left py-2">진행</th>
-                    <th className="text-left py-2">결과</th>
-                    <th className="text-left py-2">상태</th>
-                    <th className="text-left py-2">작업</th>
-                  </tr>
-                </thead>
-                <tbody>
-                    {jobs.map((job) => {
-                      const keywordText = parseJsonList(job.keywords).join(", ");
-                      const cafeText = parseJsonList(job.cafeNames).join(", ");
-                    const filterText = job.useAutoFilter
-                      ? "AUTO"
-                      : `조회 ${job.minViewCount ?? 0}+ / 댓글 ${job.minCommentCount ?? 0}+`;
-                    const excludedBoards = parseJsonList(job.excludeBoards);
-                    const boardFilterText =
-                      excludedBoards.length > 0 ? ` / 제외게시판 ${excludedBoards.length}개` : "";
+        <section className="bg-white border border-slate-200 rounded-2xl p-5 space-y-3">
+          <h2 className="text-lg font-semibold text-black">실행/진행 상황</h2>
+          {jobsLoading ? <p className="text-sm text-slate-600">작업 불러오는 중...</p> : null}
 
-                      const p = progressByJobId[job.id] || null;
-                      const displayStatus = resolveDisplayStatus(job.status, p);
-                      const resultText = getJobResultTextByStatus(displayStatus, job, p);
-                      const runningResult = resultText.label;
-                      const runningResultDetail = resultText.detail;
-                      const queuedPositionText = (() => {
-                      if (displayStatus !== "QUEUED") return null;
-                      const queued = jobs
-                        .filter((j) => j.status === "QUEUED")
-                        .slice()
-                        .sort(
-                          (a, b) =>
-                            new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
-                        );
-                      const idx = queued.findIndex((j) => j.id === job.id);
-                      if (idx < 0) return "대기중";
-                      return idx === 0 ? "대기중 (다음 순서)" : `대기중 (앞에 ${idx}개)`;
-                    })();
+          {latestBatchJobs.length > 0 ? (
+            <div className="border border-slate-200 rounded-lg p-3 bg-slate-50 space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <p className="text-sm font-semibold text-black">카페 x 키워드 진행표</p>
+                  <p className="text-xs text-slate-600">
+                    각 셀은 해당 카페에서 해당 키워드를 검색한 결과입니다. (페이지당 50개, 최대 4페이지)
+                  </p>
+                </div>
+                <div className="text-xs text-slate-600">
+                  업데이트:{" "}
+                  {(() => {
+                    const times = latestBatchJobs
+                      .map((j) => progressByJobId[j.id]?.updatedAt)
+                      .filter(Boolean)
+                      .map((t) => new Date(String(t)).getTime())
+                      .filter((t) => Number.isFinite(t));
+                    if (times.length === 0) return "-";
+                    return formatAgo(new Date(Math.max(...times)).toISOString());
+                  })()}
+                </div>
+              </div>
 
-                      const progressText = (() => {
-                        const base = [
-                          p?.stage ? `단계:${getStageLabel(p.stage)}` : null,
-                          p?.cafeName ? `카페:${p.cafeName}` : p?.cafeId ? `카페:${p.cafeId}` : null,
-                          p?.cafeIndex && p?.cafeTotal ? `(${p.cafeIndex}/${p.cafeTotal})` : null,
-                          p?.keyword ? `키워드:${p.keyword}` : null,
-                          p?.keywordIndex && p?.keywordTotal ? `(${p.keywordIndex}/${p.keywordTotal})` : null,
-                          p?.url ? `URL:${String(p.url).slice(0, 30)}…` : null,
-                          typeof p?.parseAttempts === "number" ? `파싱:${p.parseAttempts}` : null,
-                          typeof p?.collected === "number" ? `수집:${p.collected}` : null,
-                          p?.message ? `메시지:${p.message}` : null,
-                        ]
-                          .filter(Boolean)
-                          .join(" / ");
-
-                        if (displayStatus === "RUNNING") {
-                          return base || "실행 중";
-                        }
-                        if (displayStatus === "SUCCESS") {
-                          return base || `완료: ${runningResultDetail || "처리 완료"}`;
-                        }
-                        if (displayStatus === "FAILED") {
-                          return base || `실패: ${runningResultDetail || "처리 실패"}`;
-                        }
-                        if (displayStatus === "CANCELLED") {
-                          return base || `중단: ${runningResultDetail || "사용자 중단"}`;
-                        }
-                        if (displayStatus === "QUEUED") return queuedPositionText || base || "-";
-                        return base || "-";
-                      })();
-                      const action = getJobUiState(displayStatus, job.id);
-                      const listBadge = buildDisplayBadge(displayStatus, job, p);
-
-                      return (
-                        <tr key={job.id} className="border-b border-slate-100">
-                          <td className="py-2">{new Date(job.createdAt).toLocaleString("ko-KR")}</td>
-                        <td className="py-2 max-w-[180px] truncate" title={keywordText}>{keywordText}</td>
-                        <td className="py-2 max-w-[180px] truncate" title={cafeText}>{cafeText}</td>
-                        <td className="py-2">{filterText}{boardFilterText}</td>
-                        <td className="py-2 max-w-[260px] truncate" title={progressText}>
-                          <div className="truncate">{progressText}</div>
-                          {p?.updatedAt ? (
-                            <div className="text-xs text-slate-500">업데이트: {formatAgo(p.updatedAt)}</div>
-                          ) : null}
-                        </td>
-                        <td className="py-2">
-                          <div>{runningResult}</div>
-                          {runningResultDetail ? (
-                            <div className="text-xs text-slate-600">{runningResultDetail}</div>
-                          ) : null}
-                        </td>
-                          <td className="py-2">
-                            <span className={`text-xs px-2 py-1 rounded-full ${listBadge.style}`}>
-                              {listBadge.label}
-                            </span>
-                          </td>
-                          <td className="py-2">
-                            {displayStatus === "RUNNING" ? (
-                              <button
-                                onClick={() => cancelJob(job.id)}
-                                disabled={action.disabled && cancellingJobId === job.id}
-                                className="px-2 py-1 text-xs bg-red-600 text-white rounded disabled:opacity-50"
-                              >
-                                {action.label}
-                              </button>
-                            ) : displayStatus === "QUEUED" ? (
-                              <button
-                                onClick={() => cancelJob(job.id)}
-                                disabled={action.disabled && cancellingJobId === job.id}
-                                className="px-2 py-1 text-xs bg-red-600 text-white rounded disabled:opacity-50"
-                              >
-                                {action.label === "시작 대기" ? "대기 취소" : action.label}
-                              </button>
-                            ) : (
-                              <button
-                                onClick={() => startJob(job.id)}
-                                disabled={action.disabled}
-                                className="px-2 py-1 text-xs bg-slate-800 text-white rounded disabled:opacity-50"
-                              >
-                                {action.label}
-                              </button>
-                            )}
-                          {job.errorMessage && <p className="text-xs text-red-600 mt-1">{job.errorMessage}</p>}
-                        </td>
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs bg-white border border-slate-200 rounded-md">
+                  <thead>
+                    <tr className="text-left border-b border-slate-200">
+                      <th className="px-2 py-2">키워드 / 카페</th>
+                      {batchCafes.map((c) => (
+                        <th key={c.cafeId} className="px-2 py-2 whitespace-nowrap" title={c.cafeName}>
+                          {shortenCafeName(c.cafeName)}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {batchKeywords.map((kw) => (
+                      <tr key={kw} className="border-b border-slate-100">
+                        <td className="px-2 py-2 font-semibold">{kw}</td>
+                        {batchCafes.map((c) => {
+                          const cell = lookupCell(c.jobId, c.cafeId, kw);
+                          const p = progressByJobId[c.jobId] || null;
+                          const isCurrent = p?.cafeId === c.cafeId && p?.keyword === kw && resolveDisplayStatus("RUNNING", p) === "RUNNING";
+                          const status = cellStatusLabel(cell, c.status, isCurrent);
+                          return (
+                            <td
+                              key={`${c.cafeId}-${kw}`}
+                              className={`px-2 py-2 align-top ${isCurrent ? "bg-blue-50" : ""}`}
+                              title={[cellMetaLine(cell), cellPagesLine(cell)].filter(Boolean).join(" / ")}
+                            >
+                              <div className="space-y-0.5">
+                                <div>{status}</div>
+                                <div className="text-[11px] text-slate-600">{cellMetaLine(cell)}</div>
+                                {cell ? (
+                                  <div className="text-[11px] text-slate-400">{cellPagesLine(cell)}</div>
+                                ) : null}
+                              </div>
+                            </td>
+                          );
+                        })}
                       </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="mt-2 grid grid-cols-1 md:grid-cols-2 gap-2">
+                {batchCafes.map((c) => {
+                  const p = progressByJobId[c.jobId] || null;
+                  const msg = p?.message ? String(p.message) : "-";
+                  const when = p?.updatedAt ? formatAgo(p.updatedAt) : "-";
+                  return (
+                    <div key={c.jobId} className="text-xs border border-slate-200 rounded-md p-2 bg-white">
+                      <div className="font-semibold text-slate-800 truncate" title={c.cafeName}>
+                        {shortenCafeName(c.cafeName)}
+                      </div>
+                      <div className="text-slate-600">상태: {c.status} / 수집: {c.collected}</div>
+                      <div className="text-slate-600 truncate" title={msg}>메시지: {msg}</div>
+                      <div className="text-slate-500">업데이트: {when}</div>
+                      {(c.status === "RUNNING" || c.status === "QUEUED") ? (
+                        <button
+                          type="button"
+                          className="mt-2 px-2 py-1 text-xs bg-red-600 text-white rounded disabled:opacity-50"
+                          onClick={() => cancelJob(c.jobId)}
+                          disabled={cancellingJobId === c.jobId}
+                        >
+                          {c.status === "QUEUED" ? "대기 취소" : "중단"}
+                        </button>
+                      ) : null}
+                    </div>
+                  );
+                })}
+              </div>
             </div>
+          ) : (
+            <p className="text-sm text-slate-600">최근 작업이 없습니다.</p>
           )}
         </section>
       </div>

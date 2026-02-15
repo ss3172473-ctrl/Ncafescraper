@@ -78,15 +78,6 @@ function normalizeBoardName(boardName: string): string | null {
   return name;
 }
 
-function uniqueBoardNames(existing: Set<string>, input: string[]): Set<string> {
-  for (const name of input) {
-    const normalized = normalizeBoardName(name);
-    if (!normalized) continue;
-    existing.add(normalized);
-  }
-  return existing;
-}
-
 function extractCafeNumericId(cafeId: string): string {
   return String(cafeId || "").trim();
 }

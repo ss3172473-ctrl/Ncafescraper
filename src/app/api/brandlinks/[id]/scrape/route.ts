@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
-import { spawn } from "child_process";
 import path from "path";
 
 // POST: 상품 정보 스크래핑
@@ -59,4 +58,3 @@ export async function POST(
     );
   }
 }
-

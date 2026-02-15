@@ -75,7 +75,11 @@ const SEARCH_API_PAGE_SIZE = 50;
 const SEARCH_API_MIN_PAGES_PER_KEYWORD = 4;
 const SEARCH_API_MAX_PAGES_PER_KEYWORD = 4;
 type SearchByMode = string;
-const SEARCH_BY_MODES_DEFAULT: SearchByMode[] = ["ARTICLE_COMMENT", "2", "1"];
+// Naver cafe mobile searchBy:
+// - "2" tends to return matches from comments as well (matches user expectation: keyword in post OR comments)
+// - "1" tends to return title/body matches.
+// We query both and merge/dedupe per page.
+const SEARCH_BY_MODES_DEFAULT: SearchByMode[] = ["2", "1"];
 
 function buildCafeSearchApiUrl(
   cafeNumericId: string,
@@ -1413,8 +1417,8 @@ async function collectCandidatesForKeyword(
       await sleep(300 + Math.floor(Math.random() * 200));
       continue;
     }
-    if (pageRows.length === 0) break;
-    pagesScanned += 1;
+    // Track *attempted* pages (user expectation: try up to 4 pages at size=50).
+    pagesScanned = pageNo;
     fetched += pageRows.length;
 
     // Persist scan progress per (cafe, keyword) so the UI can show "pagesScanned/pagesTarget".
@@ -1439,6 +1443,12 @@ async function collectCandidatesForKeyword(
         filteredOut: excludedByBoard,
       }
     ).catch(() => undefined);
+
+    if (pageRows.length === 0) {
+      // Keep scanning remaining pages (bounded to 4) so UI can confirm we attempted deep scan.
+      await sleep(120 + Math.floor(Math.random() * 120));
+      continue;
+    }
 
     for (const row of pageRows) {
       if (!row) continue;
@@ -1937,6 +1947,7 @@ async function run(jobId: string) {
   // NOTE: Avoid pre-populating the entire keyword matrix at job start.
   // Large (cafes x keywords) matrices can make the first progress write heavy and brittle.
   // Cells will be created/updated as each (cafe, keyword) starts and finishes.
+  // IMPORTANT: first progress write must succeed, otherwise the web UI will look "stuck".
   await setJobProgress(
     jobId,
     {
@@ -1949,7 +1960,7 @@ async function run(jobId: string) {
       collected: 0,
     },
     initialMatrix.length > 0 ? initialMatrix : null
-  ).catch(() => undefined);
+  );
 
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({
@@ -2108,8 +2119,11 @@ async function run(jobId: string) {
         const perCafeBudget = Math.max(1, Math.ceil(remainingGlobal / remainingCafes));
         let remainingForCafe = Math.min(remainingGlobal, perCafeBudget);
 
+        const blockedBoardTokens = new Set<string>();
         let parseAttempts = 0;
-        const parseBudget = Math.max(20, job.maxPosts * 2);
+        // Some cafes return lots of "권한/등업/가입" walls. Keep parse budget generous,
+        // and learn blocked boards as we discover them.
+        const parseBudget = Math.max(200, job.maxPosts * 10);
 
         for (let k = 0; k < keywords.length; k += 1) {
           await assertNotCancelled(jobId, `cancel requested (keyword index=${k + 1})`);
@@ -2122,7 +2136,37 @@ async function run(jobId: string) {
           let filteredByMinView = 0;
           let filteredByMinComment = 0;
           let parseFailed = 0;
-          const canCollectFromKeyword = remainingForCafe > 0 && collected.length < job.maxPosts;
+          // Stop scanning new keywords when budget is exhausted; mark remaining cells as skipped
+          // so the matrix doesn't stay as "대기" forever.
+          if (remainingForCafe <= 0 || collected.length >= job.maxPosts) {
+            const remaining = keywords.slice(k).filter(Boolean);
+            if (remaining.length > 0) {
+              const hardCapPages = SEARCH_API_MAX_PAGES_PER_KEYWORD;
+              const patches: KeywordProgressPatch[] = remaining.map((kw) => ({
+                cafeId,
+                cafeName,
+                keyword: kw,
+                status: "skipped",
+                pagesScanned: 0,
+                pagesTarget: hardCapPages,
+                perPage: SEARCH_API_PAGE_SIZE,
+                fetchedRows: 0,
+                searched: 0,
+                totalResults: 0,
+                collected: 0,
+                skipped: 0,
+                filteredOut: 0,
+              }));
+              // Chunk to keep each update smaller.
+              const chunkSize = 20;
+              for (let idx = 0; idx < patches.length; idx += chunkSize) {
+                await setJobProgress(jobId, { stage: "SEARCH", cafeId, cafeName, keyword: remaining[0] || "" }, patches.slice(idx, idx + chunkSize)).catch(() => undefined);
+              }
+            }
+            break;
+          }
+
+          const canCollectFromKeyword = true;
           await setJobProgress(
             jobId,
             {
@@ -2277,6 +2321,12 @@ async function run(jobId: string) {
               continue;
             }
 
+            const boardToken = normalizeBoardToken(cand.boardName || cand.boardType || "");
+            if (boardToken && blockedBoardTokens.has(boardToken)) {
+              keywordSkipped += 1;
+              continue;
+            }
+
             parseAttempts += 1;
             await setJobProgress(
               jobId,
@@ -2317,6 +2367,17 @@ async function run(jobId: string) {
             if (!parsed) {
               keywordSkipped += 1;
               parseFailed += 1;
+              // Detect permission/join walls and auto-block that board to avoid burning parseBudget.
+              try {
+                const txt = String(
+                  await withTimeout(page.locator("body").innerText(), 8000, "body innerText (parse fail)")
+                );
+                if (looksLikeJoinWall(txt) || looksLikePermissionWall(txt)) {
+                  if (boardToken) blockedBoardTokens.add(boardToken);
+                }
+              } catch {
+                // ignore
+              }
             await setJobProgress(
               jobId,
               {
