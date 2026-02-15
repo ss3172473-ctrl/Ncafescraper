@@ -1872,6 +1872,15 @@ async function loadJob(jobId: string): Promise<ScrapeJobForRun> {
 async function run(jobId: string) {
   const job = await loadJob(jobId);
   if (!job) throw new Error("작업이 존재하지 않습니다.");
+
+  // Mark job as RUNNING + startedAt BEFORE loading session so the UI
+  // shows it was picked up even if session decryption fails.
+  await clearCancelAndProgress(jobId).catch(() => undefined);
+  await prisma.scrapeJob.update({
+    where: { id: jobId },
+    data: { status: "RUNNING", startedAt: new Date(), errorMessage: null },
+  });
+
   const storageState = await loadStorageState();
   console.log(
     `[run] start jobId=${jobId} keyCount=${parseJsonStringArray(job.keywords).length} direct=${Boolean(
@@ -1879,13 +1888,6 @@ async function run(jobId: string) {
     )} maxPosts=${normalizeMaxPosts(job.maxPosts)} autoFilter=${job.useAutoFilter} fromDate=${job.fromDate?.toISOString() || "-"
     } toDate=${job.toDate?.toISOString() || "-"}`
   );
-
-  await clearCancelAndProgress(jobId).catch(() => undefined);
-
-  await prisma.scrapeJob.update({
-    where: { id: jobId },
-    data: { status: "RUNNING", startedAt: new Date(), errorMessage: null },
-  });
 
   const keywords = parseJsonStringArray(job.keywords);
   const directUrls = parseJsonStringArray(job.directUrls);
