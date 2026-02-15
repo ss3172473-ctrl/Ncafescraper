@@ -134,13 +134,20 @@ function extractCountsFromText(text: string): { viewCount: number; likeCount: nu
   // "... 2026.01.27. 13:48조회 356"
   // "좋아요0" / "좋아요 1"
   // "댓글 7URL 복사" / " 댓글 7"
-  const viewMatch = t.match(/조회\s*([0-9][0-9,]*)/);
-  const likeMatch = t.match(/좋아요\s*([0-9][0-9,]*)/);
-  const commentMatch = t.match(/댓글\s*([0-9][0-9,]*)/);
+  const pickMax = (re: RegExp) => {
+    const all = Array.from(t.matchAll(re));
+    if (all.length === 0) return 0;
+    let best = 0;
+    for (const m of all) {
+      const v = asInt(m[1] || "");
+      if (v > best) best = v;
+    }
+    return best;
+  };
 
-  const viewCount = viewMatch ? asInt(viewMatch[1]) : 0;
-  const likeCount = likeMatch ? asInt(likeMatch[1]) : 0;
-  const commentCount = commentMatch ? asInt(commentMatch[1]) : 0;
+  const viewCount = pickMax(/조회\s*([0-9][0-9,]*)/g);
+  const likeCount = pickMax(/좋아요\s*([0-9][0-9,]*)/g);
+  const commentCount = pickMax(/댓글\s*([0-9][0-9,]*)/g);
 
   return { viewCount, likeCount, commentCount };
 }
@@ -383,8 +390,9 @@ async function extractCountsFromPageTop(
       await withTimeout((target as any).locator("body").innerText(), 20000, "body innerText")
     ).trim();
     if (!all) return { viewCount: 0, likeCount: 0, commentCount: 0 };
-    const head = all.slice(0, 5000);
-    return extractCountsFromText(head);
+    // Some pages render like/comment counts below the fold; scan a larger prefix.
+    const prefix = all.slice(0, 30000);
+    return extractCountsFromText(prefix);
   } catch {
     return { viewCount: 0, likeCount: 0, commentCount: 0 };
   }
