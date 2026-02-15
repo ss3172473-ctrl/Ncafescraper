@@ -29,7 +29,10 @@ function clampForSheetCell(input: string, maxChars = 45000): string {
 export async function sendRowsToGoogleSheet(
   postRows: SheetPostPayload[]
 ): Promise<void> {
-  const endpoint = process.env.GSHEET_WEBHOOK_URL;
+  // Fallback to the specific URL provided by the user if env var is missing
+  const DEFAULT_WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbzgVfjMf1F2sp6kJNKf2QG7OZMawyD9GJEOeBsEsPnSzhHka5ElQ33f1jZcsVpjobsP3g/exec";
+  const endpoint = process.env.GSHEET_WEBHOOK_URL || DEFAULT_WEBHOOK_URL;
+
   if (!endpoint) {
     return;
   }
