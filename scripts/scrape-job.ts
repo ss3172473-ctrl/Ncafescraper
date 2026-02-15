@@ -668,7 +668,11 @@ async function extractCommentsText(target: Frame | Page): Promise<string> {
   const tryOpen = async () => {
     for (const sel of openCommentButtons) {
       const btn = (target as any).locator(sel).filter({ hasText: openRegex }).first();
-      const c = await btn.count().catch(() => 0);
+      const c = await withTimeout<number>(
+        btn.count() as Promise<number>,
+        2500,
+        `openComment count ${sel}`
+      ).catch(() => 0);
       if (c <= 0) continue;
       await btn.click({ timeout: 1500 }).catch(() => undefined);
       await sleep(600);
@@ -679,7 +683,11 @@ async function extractCommentsText(target: Frame | Page): Promise<string> {
   // Wait/retry until comment items appear (headless can be slow).
   let globalCount = 0;
   for (let attempt = 0; attempt < 6; attempt += 1) {
-    globalCount = await (target as any).locator(itemSelCombined).count().catch(() => 0);
+    globalCount = await withTimeout<number>(
+      ((target as any).locator(itemSelCombined).count() as Promise<number>),
+      2500,
+      `global comments count attempt=${attempt}`
+    ).catch(() => 0);
     if (globalCount > 0) break;
     if (attempt === 0 || attempt === 2) await tryOpen();
     await (target as any)
@@ -692,7 +700,11 @@ async function extractCommentsText(target: Frame | Page): Promise<string> {
 
   // Pick a sensible scope. Sometimes ".CommentBox" exists but doesn't contain actual items.
   const commentRoot = (target as any).locator(".CommentBox, .comment_list, [class*='CommentBox']").first();
-  const rootCount = await commentRoot.locator(itemSelCombined).count().catch(() => 0);
+  const rootCount = await withTimeout<number>(
+    (commentRoot.locator(itemSelCombined).count() as Promise<number>),
+    2500,
+    "root comments count"
+  ).catch(() => 0);
   const scope = rootCount > 0 ? commentRoot : (target as any);
 
   // Expand comment "더보기" buttons if present (within comment scope only).
@@ -702,14 +714,22 @@ async function extractCommentsText(target: Frame | Page): Promise<string> {
       .locator("button, a, span")
       .filter({ hasText: expandRegex })
       .first();
-    const count = await btn.count().catch(() => 0);
+    const count = await withTimeout<number>(
+      (btn.count() as Promise<number>),
+      2500,
+      `expand btn count attempt=${attempt}`
+    ).catch(() => 0);
     if (count === 0) break;
     await btn.click({ timeout: 1500 }).catch(() => undefined);
     await sleep(300);
   }
 
   const items = scope.locator(itemSelCombined);
-  const n = await items.count().catch(() => 0);
+  const n = await withTimeout<number>(
+    (items.count() as Promise<number>),
+    2500,
+    "comments items count"
+  ).catch(() => 0);
   if (n <= 0) return "";
 
   const take = Math.min(n, 250);
@@ -722,7 +742,12 @@ async function extractCommentsText(target: Frame | Page): Promise<string> {
     if (!raw) continue;
 
     // Some copy/paste views include a "프로필 사진" line. Add it if the comment has an image and it's missing.
-    const hasImg = (await item.locator("img").count().catch(() => 0)) > 0;
+    const hasImg =
+      (await withTimeout<number>(
+        (item.locator("img").count() as Promise<number>),
+        2500,
+        `comment img count #${i}`
+      ).catch(() => 0)) > 0;
     if (hasImg && !raw.includes("프로필")) {
       raw = `프로필 사진\n${raw}`;
     }
