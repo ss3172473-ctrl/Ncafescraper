@@ -2358,11 +2358,18 @@ async function run(jobId: string) {
                 filteredOut: keywordFiltered,
               }
             ).catch(() => undefined);
-            const parsed = await withTimeout(
-              parsePost(page, cand.url, cafeId, cafeNumericId, cafeName, cand.subject),
-              90000,
-              "parsePost overall"
-            ).catch(() => null);
+            let parsed = null;
+            let parseErr: any = null;
+            try {
+              parsed = await withTimeout(
+                parsePost(page, cand.url, cafeId, cafeNumericId, cafeName, cand.subject),
+                90000,
+                "parsePost overall"
+              );
+            } catch (e) {
+              parseErr = e;
+            }
+
             if (!parsed) {
               keywordSkipped += 1;
               parseFailed += 1;
@@ -2411,7 +2418,10 @@ async function run(jobId: string) {
                   filteredOut: keywordFiltered,
                 }
               ).catch(() => undefined);
-              console.log(`[run] parse_fail url=${cand.url} keyword=${keyword}`);
+              console.error(
+                `[run] parse_fail url=${cand.url} keyword=${keyword} error=${parseErr instanceof Error ? parseErr.message : String(parseErr)
+                }`
+              );
               continue;
             }
 
@@ -2656,6 +2666,7 @@ async function run(jobId: string) {
       resultCount: savedCount,
       sheetSynced: syncedCount,
       resultPath: csvPath,
+      errorMessage: null, // Clear any previous error
       completedAt: new Date(),
     },
   });

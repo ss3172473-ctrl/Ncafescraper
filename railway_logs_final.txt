@@ -1,0 +1,11 @@
+Starting Container
+
+> brandconnect-automation@1.0.0 worker
+> npx ts-node --project tsconfig.scripts.json scripts/queue-worker.ts
+
+queue worker started
+[worker] refreshing joined cafes (hourly)
+(node:25) [DEP0190] DeprecationWarning: Passing args to a child process with shell option true can lead to security vulnerabilities, as the arguments are not escaped, only concatenated.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+[child:refresh-cafes.ts] [cafes] upsert done
+[child:refresh-cafes.ts] [cafes] fetched=6

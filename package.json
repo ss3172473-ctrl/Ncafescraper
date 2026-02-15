@@ -6,7 +6,6 @@
   "scripts": {
     "dev": "next dev",
     "build": "prisma generate && next build",
-    "postinstall": "prisma generate && npx playwright install chromium",
     "start": "next start",
     "lint": "eslint",
     "login": "npx ts-node --project tsconfig.scripts.json scripts/login.ts",
