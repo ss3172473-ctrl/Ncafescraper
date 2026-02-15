@@ -89,24 +89,34 @@
 - Sheets는 셀 글자수 제한이 있어 `src/lib/sheets.ts`에서 긴 텍스트를 잘라서 보냅니다(원문 전체는 DB에 남김).
 
 ## 4) 환경변수(필수)
-
+ 
 Vercel과 Railway 모두 아래는 **동일하게 설정**:
-
+ 
 - `DATABASE_URL`
   - Neon Postgres 접속 문자열
   - Web/Worker가 서로 다른 DB를 보면 “진행표가 안 뜸 / 작업이 따로 도는” 현상이 발생합니다.
 - `APP_AUTH_SECRET` (16자 이상)
-  - storageState 암호화/복호화, 로그인 토큰 서명에 사용
+  - **중요**: Web(Vercel)과 Worker(Railway)의 값이 다르면 **"Unsupported state"** 에러가 발생하며 작업이 실패합니다.
+  - 반드시 **Shared Variable** 기능 등을 사용하여 두 서비스가 동일한 값을 참조하도록 하세요.
 - `GSHEET_WEBHOOK_URL`
   - Apps Script Web App URL
-  - 비워두면 Sheets 전송을 스킵(=DB만 저장)
-
+  - *Note*: 2026-02-16 업데이트로 코드(`src/lib/sheets.ts`) 내에 기본 URL이 하드코딩되었습니다. 환경변수가 없으면 기본값을 사용합니다.
+ 
 옵션:
-- `APP_LOGIN_ID`, `APP_LOGIN_PASSWORD`
-  - `/login` 로그인용(간단 비밀번호 인증)
-  - 현재 코드는 “토큰이 없어도 public 사용자”로 동작하도록 되어 있어, 진짜 보안이 필요하면 `src/lib/auth.ts`의 `getCurrentUser()` 정책을 강화해야 합니다.
-- Telegram(선택):
-  - `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_CHAT_IDS` 등
+- `APP_LOGIN_ID`, `APP_LOGIN_PASSWORD`: 로그인용
+- Telegram 토큰 등
+ 
+## 4.1) 배포 및 운영 가이드 (2026-02-16 업데이트)
+ 
+### Worker 배포 (Railway)
+- **Dockerfile 기반 배포**: `Dockerfile`이 프로젝트 루트에 있으며, `mcr.microsoft.com/playwright:v1.49.0-jammy` 이미지를 기반으로 합니다.
+- **Playwright 설치**: Docker 이미지에 브라우저가 포함되어 있어 별도의 `npx playwright install` 과정이 필요 없습니다. (빌드 속도 향상 및 오류 방지)
+- **주의**: `package.json`에 `postinstall` 스크립트가 있으면 Docker 빌드 시점에서 `prisma generate` 오류가 날 수 있어 제거되었습니다.
+ 
+### Google Sheet 연동
+- **시트 이름**: `posts_v2` (앱스크립트가 자동 생성)
+- **데이터**: 제목 또는 본문에 키워드가 포함되면 수집됨 (API `searchBy=1` 모드 사용)
+- **디버깅**: Worker 로그에 `sheetSynced: N`이 뜨는지 확인하세요. `GSHEET_WEBHOOK_URL`이 없으면 전송 시도조차 하지 않습니다.
 
 ## 5) 세션(storageState) 준비(가장 중요)
 
