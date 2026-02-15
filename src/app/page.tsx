@@ -78,7 +78,8 @@ function parseJsonList(input: string | null): string[] {
 }
 
 function makePairKey(cafeId: string, keyword: string) {
-  return `${String(cafeId || "").trim()}::${String(keyword || "").trim()}`;
+  // Must match Worker keying: lowercased cafeId + keyword.
+  return `${String(cafeId || "").trim().toLowerCase()}::${String(keyword || "").trim().toLowerCase()}`;
 }
 
 function formatAgo(iso?: string) {
@@ -462,7 +463,6 @@ export default function DashboardPage() {
       ref.toDate || "",
       String(ref.minViewCount ?? ""),
       String(ref.minCommentCount ?? ""),
-      String(ref.maxPosts ?? ""),
     ].join("|");
     return sorted.filter((j) => {
       const t = new Date(j.createdAt).getTime();
@@ -473,7 +473,6 @@ export default function DashboardPage() {
         j.toDate || "",
         String(j.minViewCount ?? ""),
         String(j.minCommentCount ?? ""),
-        String(j.maxPosts ?? ""),
       ].join("|");
       return s === sig;
     });
