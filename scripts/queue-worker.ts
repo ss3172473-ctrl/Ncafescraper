@@ -119,9 +119,10 @@ async function tick() {
     console.error("[worker] refresh cafes failed", error);
   });
 
+  const MAX_CONCURRENT = 3;
   const running = await prisma.scrapeJob.count({ where: { status: "RUNNING" } });
-  if (running > 0) {
-    await heartbeat("busy", { running }).catch(() => undefined);
+  if (running >= MAX_CONCURRENT) {
+    await heartbeat("busy", { running, max: MAX_CONCURRENT }).catch(() => undefined);
     return;
   }
 
@@ -131,7 +132,7 @@ async function tick() {
   });
 
   if (!nextJob) {
-    await heartbeat("idle").catch(() => undefined);
+    await heartbeat(running > 0 ? "busy" : "idle", { running }).catch(() => undefined);
     return;
   }
 
@@ -148,12 +149,9 @@ async function tick() {
     return;
   }
 
-  await heartbeat("run_scrape", { jobId: nextJob.id }).catch(() => undefined);
-  const child = spawnScript("scrape-job.ts", [nextJob.id]);
-
-  await new Promise<void>((resolve) => {
-    child.on("exit", () => resolve());
-  });
+  // Fire and forget — don't await exit so the next tick can start another job.
+  await heartbeat("run_scrape", { jobId: nextJob.id, running: running + 1 }).catch(() => undefined);
+  spawnScript("scrape-job.ts", [nextJob.id]);
 }
 
 async function main() {

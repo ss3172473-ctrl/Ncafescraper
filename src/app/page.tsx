@@ -232,17 +232,19 @@ function resolveDisplayStatus(jobStatus: string, progress: JobProgress | null): 
 }
 
 function cellStatusLabel(cell: JobProgressCell | null, jobStatus: "QUEUED" | "RUNNING" | "SUCCESS" | "FAILED" | "CANCELLED", isCurrent: boolean) {
+  const count = cell ? Number(cell.collected ?? 0) : 0;
+  const countStr = count > 0 ? ` ${count}건` : "";
   if (cell) {
     const s = String(cell.status || "").toLowerCase();
-    if (s === "done") return "✅ 완료";
+    if (s === "done") return `✅${countStr || " 완료"}`;
     if (s === "failed") return "❌ 실패";
     if (s === "skipped") return "⏭ 스킵";
-    if (s === "parsing") return "🔄 파싱";
-    if (s === "searching") return isCurrent ? "🔍 실행" : "⏳ 대기";
+    if (s === "parsing") return `🔄 파싱${countStr}`;
+    if (s === "searching") return isCurrent ? "🔍 검색" : "⏳ 대기";
     // Cell exists but no recognized status — use job-level status for terminal states
-    if (jobStatus === "SUCCESS") return "✅ 완료";
+    if (jobStatus === "SUCCESS") return `✅${countStr || " 완료"}`;
     if (jobStatus === "FAILED") return "❌ 실패";
-    if (jobStatus === "CANCELLED") return "🚫 중단";
+    if (jobStatus === "CANCELLED") return `🚫 중단${countStr}`;
     return isCurrent ? "🔍 실행" : "⏳ 대기";
   }
   if (jobStatus === "SUCCESS") return "✅ 완료";
@@ -250,6 +252,26 @@ function cellStatusLabel(cell: JobProgressCell | null, jobStatus: "QUEUED" | "RU
   if (jobStatus === "CANCELLED") return "🚫 중단";
   if (jobStatus === "RUNNING") return isCurrent ? "🔍 실행" : "⏳ 대기";
   return "⏳ 대기";
+}
+
+function cellBgClass(cell: JobProgressCell | null, jobStatus: string, isCurrent: boolean): string {
+  if (isCurrent) return "bg-blue-100 ring-2 ring-blue-400 ring-inset animate-pulse";
+  if (!cell) {
+    if (jobStatus === "SUCCESS") return "bg-green-50";
+    if (jobStatus === "FAILED") return "bg-red-50";
+    if (jobStatus === "CANCELLED") return "bg-yellow-50";
+    return "";
+  }
+  const s = String(cell.status || "").toLowerCase();
+  const count = Number(cell.collected ?? 0);
+  if (s === "done" || jobStatus === "SUCCESS") {
+    return count > 0 ? "bg-green-100" : "bg-green-50";
+  }
+  if (s === "parsing") return "bg-blue-50";
+  if (s === "searching") return "bg-blue-50";
+  if (s === "failed" || jobStatus === "FAILED") return "bg-red-50";
+  if (jobStatus === "CANCELLED") return "bg-yellow-50";
+  return "";
 }
 
 function cellMetaLine(cell: JobProgressCell | null) {
@@ -1088,14 +1110,15 @@ export default function DashboardPage() {
                           const p = progressByJobId[c.jobId] || null;
                           const isCurrent = p?.cafeId === c.cafeId && p?.keyword === kw && resolveDisplayStatus("RUNNING", p) === "RUNNING";
                           const status = cellStatusLabel(cell, c.status, isCurrent);
+                          const bgCls = cellBgClass(cell, c.status, isCurrent);
                           return (
                             <td
                               key={`${c.cafeId}-${kw}`}
-                              className={`px-2 py-2 align-top ${isCurrent ? "bg-blue-50" : ""}`}
+                              className={`px-2 py-2 align-top transition-colors duration-150 hover:bg-slate-100 cursor-default ${bgCls}`}
                               title={[cellMetaLine(cell), cellPagesLine(cell)].filter(Boolean).join(" / ")}
                             >
                               <div className="space-y-0.5">
-                                <div>{status}</div>
+                                <div className="font-medium">{status}</div>
                                 <div className="text-[11px] text-slate-600">{cellMetaLine(cell)}</div>
                                 {cell ? (
                                   <div className="text-[11px] text-slate-400">{cellPagesLine(cell)}</div>
