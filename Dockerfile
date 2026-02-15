@@ -15,6 +15,10 @@ RUN npx playwright install chromium --with-deps
 # Copy the rest of the application
 COPY . .
 
+# Set dummy env vars for build time (prisma generate & next build might need them)
+ENV DATABASE_URL="postgresql://dummy:5432/dummy"
+ENV APP_AUTH_SECRET="dummy_secret_for_build"
+
 # Generate Prisma Client
 # Need DATABASE_URL for some schema features, but usually fine for generate
 # If build fails, might need ARG DATABASE_URL
