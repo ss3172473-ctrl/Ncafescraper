@@ -716,7 +716,9 @@ async function extractCommentsText(target: Frame | Page): Promise<string> {
   const parts: string[] = [];
   for (let i = 0; i < take; i += 1) {
     const item = items.nth(i);
-    let raw = String(await item.innerText().catch(() => "")).trim();
+    let raw = String(
+      await withTimeout(item.innerText(), 4000, `comment innerText #${i}`).catch(() => "")
+    ).trim();
     if (!raw) continue;
 
     // Some copy/paste views include a "프로필 사진" line. Add it if the comment has an image and it's missing.
