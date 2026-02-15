@@ -53,6 +53,14 @@ function spawnScript(scriptFile: string, args: string[] = []) {
     process.stderr.write(`[child:${scriptFile}:err] ${data}`);
   });
 
+  child.on("error", (err) => {
+    console.error(`[child:${scriptFile}:spawn_error]`, err);
+  });
+
+  child.on("close", (code, signal) => {
+    console.log(`[child:${scriptFile}:close] code=${code} signal=${signal}`);
+  });
+
   return child;
 }
 
