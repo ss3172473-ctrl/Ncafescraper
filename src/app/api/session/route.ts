@@ -63,7 +63,17 @@ export async function POST(request: Request) {
       );
     }
 
-    const secret = process.env.APP_AUTH_SECRET || "";
+    const secret = String(process.env.APP_AUTH_SECRET || "");
+    if (secret.trim().length < 16) {
+      return NextResponse.json(
+        {
+          success: false,
+          error:
+            "APP_AUTH_SECRET가 필요합니다. (Vercel/Railway 환경변수에 16자 이상으로 설정하세요. Web/Worker 값은 반드시 동일해야 합니다.)",
+        },
+        { status: 400 }
+      );
+    }
     const json = typeof storageState === "string" ? storageState : JSON.stringify(storageState);
     // Validate JSON
     JSON.parse(json);
