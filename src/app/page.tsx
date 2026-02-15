@@ -178,6 +178,32 @@ const JOB_STATUS_LABELS: Record<string, string> = {
   CANCELLED: "중단됨",
 };
 
+function formatCellStatus(cell: JobProgressCell | null) {
+  if (!cell) return "대기";
+  if (cell.status === "done") {
+    return `완료(${cell.collected ?? 0} / ${cell.skipped ?? 0})`;
+  }
+  if (cell.status === "searching") {
+    return `검색중 ${cell.searched ?? 0}/${cell.totalResults ?? 0}`;
+  }
+  if (cell.status === "parsing") {
+    return `파싱중 +${cell.collected ?? 0}/${cell.searched ?? 0}`;
+  }
+  if (cell.status === "skipped") {
+    return `제외(${cell.skipped ?? 0})`;
+  }
+  if (cell.status === "failed") {
+    return "실패";
+  }
+  if (cell.status === "cancelled") {
+    return "중단";
+  }
+  if (cell.status === "queued") {
+    return "대기";
+  }
+  return "진행중";
+}
+
 function getStoredSessionPanelOpen() {
   if (typeof window === "undefined") return null;
   try {
@@ -879,8 +905,14 @@ export default function DashboardPage() {
                       const stepIndex = isRunning ? getPipelineIndex(p?.stage) : 1;
                       const statusKey = String(job.status || "").toUpperCase();
 
-                      return (
-                        <div key={job.id} className="border border-slate-200 rounded-lg p-3">
+                          const matrixData = isRunning ? buildMatrixRows(job, p) : null;
+                          const matrixText =
+                            matrixData && matrixData.keywords.length > 0 && matrixData.cafes.length > 0
+                              ? `총수집 ${matrixData.totalCollected} / 스킵 ${matrixData.totalSkipped} / 필터 ${matrixData.totalFiltered}`
+                              : "진행 데이터 수집 중";
+
+                          return (
+                            <div key={job.id} className="border border-slate-200 rounded-lg p-3">
                           <div className="flex flex-wrap items-center gap-2 mb-2">
                             <p className="font-semibold text-black">{new Date(job.createdAt).toLocaleString("ko-KR")}</p>
                             <span className={`text-xs px-2 py-1 rounded-full ${getStatusBadgeClass(job.status)}`}>
@@ -911,6 +943,7 @@ export default function DashboardPage() {
                           <p className="text-sm text-black truncate" title={progressText}>
                             {progressText || "-"}
                           </p>
+                          <p className="text-xs text-slate-600 mt-1">{matrixText}</p>
                           <div className="mt-2 flex gap-2">
                             {PIPELINE_STEPS.map((step, idx) => {
                               const active = idx <= stepIndex;
@@ -931,6 +964,54 @@ export default function DashboardPage() {
                               );
                             })}
                           </div>
+                          {isRunning && matrixData && matrixData.keywords.length > 0 && matrixData.cafes.length > 0 ? (
+                            <div className="mt-3 overflow-x-auto">
+                              <div className="text-xs text-slate-600 mb-1">카페 x 키워드 진행표</div>
+                              <table className="w-full text-xs">
+                                <thead>
+                                  <tr className="text-left border-b border-slate-200">
+                                    <th className="pr-2 py-1">카페 / 키워드</th>
+                                    {matrixData.keywords.map((keyword) => (
+                                      <th key={`${job.id}-${keyword}`} className="pr-2 py-1 whitespace-nowrap">
+                                        {keyword}
+                                      </th>
+                                    ))}
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {matrixData.matrix.map((row, rowIndex) => {
+                                    const cafe = matrixData.cafes[rowIndex];
+                                    return (
+                                      <tr key={`${job.id}-${cafe.id}`} className="border-b border-slate-100">
+                                        <td className="font-semibold pr-2 py-1">{cafe.name}</td>
+                                        {row.map((entry, colIndex) => {
+                                          const isActive =
+                                            matrixData.currentCellActive?.cafeId === cafe.id &&
+                                            matrixData.currentCellActive.keyword === matrixData.keywords[colIndex];
+                                          return (
+                                            <td
+                                              key={`${job.id}-${cafe.id}-${matrixData.keywords[colIndex]}`}
+                                              className={`px-2 py-1 whitespace-nowrap ${
+                                                isActive ? "bg-blue-50 rounded" : ""
+                                              }`}
+                                            >
+                                              <div className="space-y-0.5">
+                                                <span>{formatCellStatus(entry.cell)}</span>
+                                                <span className="text-[11px] text-slate-500">
+                                                  {entry.cell?.filteredOut ? `필터 ${entry.cell.filteredOut} / ` : ""}
+                                                  {entry.cell?.collected !== undefined ? `수집 ${entry.cell.collected}` : ""}
+                                                </span>
+                                              </div>
+                                            </td>
+                                          );
+                                        })}
+                                      </tr>
+                                    );
+                                  })}
+                                </tbody>
+                              </table>
+                            </div>
+                          ) : null}
                           <div className="mt-2">
                             <div className="w-full h-2 bg-slate-100 rounded-full overflow-hidden">
                               <div
