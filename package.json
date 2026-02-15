@@ -17,7 +17,8 @@
     "cafes:refresh": "npx ts-node --project tsconfig.scripts.json scripts/refresh-cafes.ts",
     "scrape:job": "npx ts-node --project tsconfig.scripts.json scripts/scrape-job.ts",
     "worker": "npx ts-node --project tsconfig.scripts.json scripts/queue-worker.ts",
-    "debug:cafe-search": "npx ts-node --project tsconfig.scripts.json scripts/debug-cafe-search.ts"
+    "debug:cafe-search": "npx ts-node --project tsconfig.scripts.json scripts/debug-cafe-search.ts",
+    "session:check": "npx ts-node --project tsconfig.scripts.json scripts/check-session.ts"
   },
   "dependencies": {
     "@google/generative-ai": "^0.21.0",
@@ -26,6 +27,7 @@
     "dotenv": "^17.2.3",
     "next": "16.1.3",
     "openai": "^6.16.0",
+    "p-limit": "^7.3.0",
     "playwright": "1.58.1",
     "playwright-extra": "^4.3.6",
     "prisma": "^5.22.0",

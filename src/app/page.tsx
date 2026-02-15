@@ -240,26 +240,27 @@ function cellStatusLabel(cell: JobProgressCell | null, jobStatus: "QUEUED" | "RU
     if (s === "failed") return "❌ 실패";
     if (s === "skipped") return "⏭ 스킵";
     if (s === "parsing") return `🔄 파싱${countStr}`;
-    if (s === "searching") return isCurrent ? "🔍 검색" : "⏳ 대기";
-    // Cell exists but no recognized status — use job-level status for terminal states
+    if (s === "searching") return isCurrent ? "🔍 검색중" : "🔄 대기";
     if (jobStatus === "SUCCESS") return `✅${countStr || " 완료"}`;
     if (jobStatus === "FAILED") return "❌ 실패";
     if (jobStatus === "CANCELLED") return `🚫 중단${countStr}`;
-    return isCurrent ? "🔍 실행" : "⏳ 대기";
+    return isCurrent ? "🔍 실행" : "🔄 대기";
   }
+  // No cell data yet
   if (jobStatus === "SUCCESS") return "✅ 완료";
   if (jobStatus === "FAILED") return "❌ 실패";
   if (jobStatus === "CANCELLED") return "🚫 중단";
-  if (jobStatus === "RUNNING") return isCurrent ? "🔍 실행" : "⏳ 대기";
+  if (jobStatus === "RUNNING") return isCurrent ? "🔍 실행" : "🔄 대기";
   return "⏳ 대기";
 }
 
 function cellBgClass(cell: JobProgressCell | null, jobStatus: string, isCurrent: boolean): string {
-  if (isCurrent) return "bg-blue-100 ring-2 ring-blue-400 ring-inset animate-pulse";
+  if (isCurrent) return "bg-blue-200 ring-2 ring-blue-500 ring-inset";
   if (!cell) {
     if (jobStatus === "SUCCESS") return "bg-green-50";
     if (jobStatus === "FAILED") return "bg-red-50";
     if (jobStatus === "CANCELLED") return "bg-yellow-50";
+    if (jobStatus === "RUNNING") return "bg-blue-50";
     return "";
   }
   const s = String(cell.status || "").toLowerCase();
@@ -267,7 +268,7 @@ function cellBgClass(cell: JobProgressCell | null, jobStatus: string, isCurrent:
   if (s === "done" || jobStatus === "SUCCESS") {
     return count > 0 ? "bg-green-100" : "bg-green-50";
   }
-  if (s === "parsing") return "bg-blue-50";
+  if (s === "parsing") return "bg-blue-100";
   if (s === "searching") return "bg-blue-50";
   if (s === "failed" || jobStatus === "FAILED") return "bg-red-50";
   if (jobStatus === "CANCELLED") return "bg-yellow-50";
@@ -275,7 +276,7 @@ function cellBgClass(cell: JobProgressCell | null, jobStatus: string, isCurrent:
 }
 
 function cellMetaLine(cell: JobProgressCell | null) {
-  if (!cell) return "-";
+  if (!cell) return "";
   const t = Number(cell.totalResults ?? 0) || 0;
   const c = Number(cell.collected ?? 0) || 0;
   const s = Number(cell.skipped ?? 0) || 0;

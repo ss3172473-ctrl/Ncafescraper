@@ -119,7 +119,7 @@ async function tick() {
     console.error("[worker] refresh cafes failed", error);
   });
 
-  const MAX_CONCURRENT = 3;
+  const MAX_CONCURRENT = 2;
   const running = await prisma.scrapeJob.count({ where: { status: "RUNNING" } });
   if (running >= MAX_CONCURRENT) {
     await heartbeat("busy", { running, max: MAX_CONCURRENT }).catch(() => undefined);
