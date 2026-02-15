@@ -1097,6 +1097,41 @@ async function collectArticleCandidates(
   return { cafeNumericId, candidates };
 }
 
+async function collectCandidatesForKeyword(
+  page: Page,
+  cafeNumericId: string,
+  keyword: string,
+  perKeywordTake: number,
+  excludedBoards: Set<string>
+): Promise<ArticleCandidate[]> {
+  const candidates: ArticleCandidate[] = [];
+  const seen = new Set<number>();
+  const pagesToFetch = Math.min(6, Math.ceil(Math.max(1, perKeywordTake) / 20));
+  const rows = await fetchCandidatesFromSearchApi(page, cafeNumericId, keyword, 1, pagesToFetch).catch(
+    () => []
+  );
+  const take = Math.max(1, Math.min(perKeywordTake, rows.length));
+
+  for (let i = 0; i < take; i += 1) {
+    const row = rows[i];
+    if (!row) continue;
+    if (isExcludedBoard(row, excludedBoards)) {
+      continue;
+    }
+    if (seen.has(row.articleId)) continue;
+    seen.add(row.articleId);
+    candidates.push(row);
+  }
+
+  candidates.sort((a, b) => {
+    const at = a.addedAt ? a.addedAt.getTime() : 0;
+    const bt = b.addedAt ? b.addedAt.getTime() : 0;
+    return bt - at;
+  });
+
+  return candidates;
+}
+
 async function parsePost(
   page: Page,
   sourceUrl: string,
@@ -1603,108 +1638,129 @@ async function run(jobId: string) {
           collected: collected.length,
         }).catch(() => undefined);
 
-        const { cafeNumericId, candidates } = await collectArticleCandidates(
-          page,
-          jobId,
-          cafeId,
-          cafeName,
-          keywords,
-          excludedBoardTokens,
-          // Candidate cap per cafe (keep stable even with many keywords).
-          alreadyEnough ? 1 : Math.min(120, Math.max(30, Math.ceil(job.maxPosts * 6))),
-          collected.length
-        );
+        const cafeNumericId = await getClubId(page, cafeId);
+        const seenArticleIds = new Set<number>();
 
-        // Requirement: search each keyword once per selected cafe.
-        // Even if we've already collected enough posts, we still execute the keyword search pass above.
-        if (alreadyEnough) {
-          console.log(`[run] maxPosts reached; skipping parse for cafe=${cafeId} (search pass done)`);
-          continue;
-        }
+        // Candidate cap per cafe (keep stable even with many keywords).
+        const perCafeMaxUrls = alreadyEnough ? 1 : Math.min(120, Math.max(30, Math.ceil(job.maxPosts * 6)));
+        const perKeywordTake = Math.max(1, Math.ceil(perCafeMaxUrls / Math.max(1, keywords.length)));
 
         let parseAttempts = 0;
         const parseBudget = Math.max(20, job.maxPosts * 8);
 
-        for (const cand of candidates) {
-          if (await isCancelRequested(jobId)) {
-            await setJobProgress(jobId, { stage: "CANCELLED", message: "cancel requested" }).catch(() => undefined);
-            throw new Error("cancelled");
-          }
-          if (collected.length >= job.maxPosts) break;
-          if (parseAttempts >= parseBudget) {
-            console.log(`[run] parseBudget reached cafe=${cafeId} budget=${parseBudget}`);
-            break;
-          }
-
-          // Fast date filter from search API (more reliable than DOM parsing).
-          if (job.fromDate && cand.addedAt && cand.addedAt < job.fromDate) continue;
-          if (job.toDate && cand.addedAt && cand.addedAt > job.toDate) continue;
-
-          // Early filter by counts from list API (fast).
-          if (job.minViewCount !== null && cand.readCount < job.minViewCount) continue;
-          if (job.minCommentCount !== null && cand.commentCount < job.minCommentCount) continue;
-
-          parseAttempts += 1;
+        for (let k = 0; k < keywords.length; k += 1) {
+          const keyword = keywords[k] || "";
           await setJobProgress(jobId, {
-            stage: "PARSE",
+            stage: "SEARCH",
             cafeId,
             cafeName,
-            url: cand.url,
-            candidates: candidates.length,
-            parseAttempts,
+            keyword,
+            keywordIndex: k + 1,
+            keywordTotal: keywords.length,
+            candidates: seenArticleIds.size,
             collected: collected.length,
+            message: "searching",
           }).catch(() => undefined);
-          const parsed = await withTimeout(
-            parsePost(page, cand.url, cafeId, cafeNumericId, cafeName, cand.subject),
-            90000,
-            "parsePost overall"
-          ).catch(() => null);
-          if (!parsed) continue;
 
-          // Keyword relevance check (defensive).
-          const normalizedForKeywordCheck = `${cand.subject}\n${parsed.title}\n${parsed.contentText}`;
-          if (!includesKeyword(normalizedForKeywordCheck, cand.queryKeyword)) {
-            console.log(
-              `[filter] drop keyword_miss kw=${cand.queryKeyword} url=${cand.url} title=${(parsed.title || "").slice(0, 60)}`
-            );
+          const candidates = await collectCandidatesForKeyword(
+            page,
+            cafeNumericId,
+            keyword,
+            perKeywordTake,
+            excludedBoardTokens
+          );
+
+          // Requirement: search each keyword once per selected cafe.
+          // If maxPosts already reached, keep search execution and skip parsing.
+          if (alreadyEnough) {
+            console.log(`[run] maxPosts reached; skipping parse for cafe=${cafeId} keyword=${keyword}`);
             continue;
           }
 
-          // Use counts from the search API list (more reliable than page text parsing).
-          // Prefer page-extracted counts if present (it reflects current values).
-          if (!parsed.viewCount) parsed.viewCount = cand.readCount;
-          if (!parsed.likeCount) parsed.likeCount = cand.likeCount;
-          if (!parsed.commentCount) parsed.commentCount = cand.commentCount;
-          if (cand.addedAt) parsed.publishedAt = cand.addedAt;
+          for (const cand of candidates) {
+            if (await isCancelRequested(jobId)) {
+              await setJobProgress(jobId, { stage: "CANCELLED", message: "cancel requested" }).catch(() => undefined);
+              throw new Error("cancelled");
+            }
+            if (collected.length >= job.maxPosts) break;
+            if (parseAttempts >= parseBudget) {
+              console.log(`[run] parseBudget reached cafe=${cafeId} budget=${parseBudget}`);
+              break;
+            }
 
-          if (!parsed.title || parsed.title.trim().length < 2) {
-            parsed.title = cand.subject || parsed.title;
+            if (seenArticleIds.has(cand.articleId)) continue;
+            seenArticleIds.add(cand.articleId);
+
+            // Fast date filter from search API (more reliable than DOM parsing).
+            if (job.fromDate && cand.addedAt && cand.addedAt < job.fromDate) continue;
+            if (job.toDate && cand.addedAt && cand.addedAt > job.toDate) continue;
+
+            // Early filter by counts from list API (fast).
+            if (job.minViewCount !== null && cand.readCount < job.minViewCount) continue;
+            if (job.minCommentCount !== null && cand.commentCount < job.minCommentCount) continue;
+
+            parseAttempts += 1;
+            await setJobProgress(jobId, {
+              stage: "PARSE",
+              cafeId,
+              cafeName,
+              url: cand.url,
+              candidates: candidates.length,
+              parseAttempts,
+              collected: collected.length,
+            }).catch(() => undefined);
+            const parsed = await withTimeout(
+              parsePost(page, cand.url, cafeId, cafeNumericId, cafeName, cand.subject),
+              90000,
+              "parsePost overall"
+            ).catch(() => null);
+            if (!parsed) continue;
+
+            // Keyword relevance check (defensive).
+            const normalizedForKeywordCheck = `${cand.subject}\n${parsed.title}\n${parsed.contentText}`;
+            if (!includesKeyword(normalizedForKeywordCheck, cand.queryKeyword)) {
+              console.log(
+                `[filter] drop keyword_miss kw=${cand.queryKeyword} url=${cand.url} title=${(parsed.title || "").slice(0, 60)}`
+              );
+              continue;
+            }
+
+            // Use counts from the search API list (more reliable than page text parsing).
+            // Prefer page-extracted counts if present (it reflects current values).
+            if (!parsed.viewCount) parsed.viewCount = cand.readCount;
+            if (!parsed.likeCount) parsed.likeCount = cand.likeCount;
+            if (!parsed.commentCount) parsed.commentCount = cand.commentCount;
+            if (cand.addedAt) parsed.publishedAt = cand.addedAt;
+
+            if (!parsed.title || parsed.title.trim().length < 2) {
+              parsed.title = cand.subject || parsed.title;
+            }
+
+            const normalizedForFilter = `${cand.subject}\n${parsed.title}\n${parsed.contentText}`;
+            if (!isAllowedByWords(normalizedForFilter, includeWords, excludeWords)) {
+              continue;
+            }
+
+            collected.push(parsed);
+            sheetPending.push({
+              jobId,
+              sourceUrl: parsed.sourceUrl,
+              cafeId: parsed.cafeId,
+              cafeName: parsed.cafeName,
+              cafeUrl: parsed.cafeUrl,
+              title: parsed.title,
+              authorName: parsed.authorName,
+              publishedAt: parsed.publishedAt?.toISOString() || "",
+              viewCount: parsed.viewCount,
+              likeCount: parsed.likeCount,
+              commentCount: parsed.commentCount,
+              bodyText: parsed.bodyText || "",
+              commentsText: parsed.commentsText || "",
+              contentText: parsed.contentText,
+            });
+            await flushSheetRows().catch(() => undefined);
+            await sleep(900 + Math.floor(Math.random() * 600));
           }
-
-          const normalizedForFilter = `${cand.subject}\n${parsed.title}\n${parsed.contentText}`;
-          if (!isAllowedByWords(normalizedForFilter, includeWords, excludeWords)) {
-            continue;
-          }
-
-          collected.push(parsed);
-          sheetPending.push({
-            jobId,
-            sourceUrl: parsed.sourceUrl,
-            cafeId: parsed.cafeId,
-            cafeName: parsed.cafeName,
-            cafeUrl: parsed.cafeUrl,
-            title: parsed.title,
-            authorName: parsed.authorName,
-            publishedAt: parsed.publishedAt?.toISOString() || "",
-            viewCount: parsed.viewCount,
-            likeCount: parsed.likeCount,
-            commentCount: parsed.commentCount,
-            bodyText: parsed.bodyText || "",
-            commentsText: parsed.commentsText || "",
-            contentText: parsed.contentText,
-          });
-          await flushSheetRows().catch(() => undefined);
-          await sleep(900 + Math.floor(Math.random() * 600));
         }
       }
     }
