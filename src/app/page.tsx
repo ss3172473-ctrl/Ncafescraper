@@ -763,8 +763,57 @@ export default function DashboardPage() {
           {isSessionOpen ? (
             <div className="border border-slate-200 rounded-lg p-3 bg-slate-50 space-y-2">
               <p className="text-sm text-slate-700">
-                Worker가 네이버에 로그인된 상태로 접속하려면 Playwright storageState(JSON)가 필요합니다. 1회 생성 후 아래에 붙여넣고 저장하세요.
+                Worker가 네이버에 로그인된 상태로 접속하려면 Playwright <span className="font-mono">storageState</span>(JSON)가 필요합니다.
+                아래 입력칸에 <span className="font-semibold">JSON 전체</span>를 붙여넣고 저장하세요.
               </p>
+
+              <details className="rounded-lg border border-slate-200 bg-white px-3 py-2">
+                <summary className="cursor-pointer text-sm text-slate-800">
+                  storageState JSON 만드는 방법 (필수)
+                </summary>
+                <div className="mt-2 space-y-2 text-sm text-slate-700">
+                  <ol className="list-decimal pl-5 space-y-1">
+                    <li>
+                      내 PC에서 이 프로젝트 폴더로 이동:
+                      <span className="ml-2 font-mono">cd &quot;/Users/leesungjun/Documents/New project/naver-bc-automation&quot;</span>
+                    </li>
+                    <li>
+                      의존성 설치(최초 1회):
+                      <span className="ml-2 font-mono">npm install</span>
+                    </li>
+                    <li>
+                      Playwright 브라우저 설치(최초 1회):
+                      <span className="ml-2 font-mono">npx playwright install chromium</span>
+                    </li>
+                    <li>
+                      로그인 세션 생성:
+                      <span className="ml-2 font-mono">npm run cafe:login</span>
+                    </li>
+                    <li>
+                      브라우저 창이 뜨면 네이버에 로그인 완료 후, 자동으로 JSON 파일이 생성됩니다.
+                    </li>
+                    <li>
+                      생성 파일 경로(예상):
+                      <span className="ml-2 font-mono">playwright/storage/naver-cafe-session.json</span>
+                    </li>
+                    <li>
+                      위 파일의 내용을 <span className="font-semibold">처음부터 끝까지 전체 복사</span>해서 아래 입력칸에 붙여넣고 <span className="font-semibold">세션 저장</span>을 누르세요.
+                    </li>
+                  </ol>
+
+                  <div className="rounded-md bg-slate-50 border border-slate-200 p-2">
+                    <p className="text-xs text-slate-600">
+                      체크 포인트
+                    </p>
+                    <ul className="list-disc pl-5 text-xs text-slate-600 space-y-1">
+                      <li>JSON은 반드시 <span className="font-mono">{`{`}</span> 로 시작해야 합니다.</li>
+                      <li><span className="font-mono">cookies</span>, <span className="font-mono">origins</span>가 포함된 <span className="font-semibold">전체 JSON</span>을 붙여넣어야 합니다.</li>
+                      <li>저장 후 상단에 <span className="font-semibold">세션 사용 가능</span>이 뜨기까지 몇 초 걸릴 수 있습니다(필요시 새로고침).</li>
+                    </ul>
+                  </div>
+                </div>
+              </details>
+
               <textarea
                 className="w-full h-40 p-2 text-sm border border-slate-200 rounded bg-white text-black"
                 placeholder='여기에 storageState JSON 전체를 붙여넣기 (예: {"cookies":[...],"origins":[...]})'
