@@ -22,6 +22,7 @@ type ScrapeJob = {
   minViewCount: number | null;
   minCommentCount: number | null;
   useAutoFilter: boolean;
+  excludeBoards: string | null;
   maxPosts: number;
   resultCount: number;
   sheetSynced: number;
@@ -77,6 +78,7 @@ export default function DashboardPage() {
   const [directUrlsText, setDirectUrlsText] = useState("");
   const [includeKeywordsText, setIncludeKeywordsText] = useState("");
   const [excludeKeywordsText, setExcludeKeywordsText] = useState("");
+  const [excludeBoardsText, setExcludeBoardsText] = useState("");
   const [datePreset, setDatePreset] = useState<"1m" | "3m" | "6m" | "1y" | "2y" | "all">("3m");
   const [minViewCount, setMinViewCount] = useState("");
   const [minCommentCount, setMinCommentCount] = useState("");
@@ -331,6 +333,7 @@ export default function DashboardPage() {
           directUrls: directUrlsText,
           includeKeywords: includeKeywordsText.split(",").map((v) => v.trim()).filter(Boolean),
           excludeKeywords: excludeKeywordsText.split(",").map((v) => v.trim()).filter(Boolean),
+          excludeBoards: excludeBoardsText.split(",").map((v) => v.trim()).filter(Boolean),
           fromDate,
           toDate,
           minViewCount: minViewCount === "" ? null : Number(minViewCount),
@@ -474,6 +477,19 @@ export default function DashboardPage() {
             </div>
 
             <div>
+              <label className="text-sm text-slate-700">제외 게시판 (쉼표 구분, 공백 자동 제거)</label>
+              <input
+                value={excludeBoardsText}
+                onChange={(e) => setExcludeBoardsText(e.target.value)}
+                className="w-full mt-1 px-3 py-2 border border-slate-300 rounded-lg text-black"
+                placeholder="도치맘 핫딜공구🔛, 광고게시판"
+              />
+              <div className="mt-1 text-xs text-slate-600">
+                입력 시 해당 게시판 글을 검색 후보에서 미리 제외합니다.
+              </div>
+            </div>
+
+            <div>
               <label className="text-sm text-slate-700">최소 조회수</label>
               <input type="number" min={0} value={minViewCount} onChange={(e) => setMinViewCount(e.target.value)} className="w-full mt-1 px-3 py-2 border border-slate-300 rounded-lg text-black" />
             </div>
@@ -555,6 +571,9 @@ export default function DashboardPage() {
                     const filterText = job.useAutoFilter
                       ? "AUTO"
                       : `조회 ${job.minViewCount ?? 0}+ / 댓글 ${job.minCommentCount ?? 0}+`;
+                    const excludedBoards = parseJsonList(job.excludeBoards);
+                    const boardFilterText =
+                      excludedBoards.length > 0 ? ` / 제외게시판 ${excludedBoards.length}개` : "";
 
                     const p = progressByJobId[job.id] || null;
                     const runningResult = job.status === "RUNNING" && p
@@ -598,7 +617,7 @@ export default function DashboardPage() {
                         <td className="py-2">{new Date(job.createdAt).toLocaleString("ko-KR")}</td>
                         <td className="py-2 max-w-[180px] truncate" title={keywordText}>{keywordText}</td>
                         <td className="py-2 max-w-[180px] truncate" title={cafeText}>{cafeText}</td>
-                        <td className="py-2">{filterText}</td>
+                        <td className="py-2">{filterText}{boardFilterText}</td>
                         <td className="py-2 max-w-[260px] truncate" title={progressText}>{progressText}</td>
                         <td className="py-2">{runningResult}</td>
                         <td className="py-2">{job.status}</td>

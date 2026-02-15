@@ -97,6 +97,7 @@ export async function POST(request: NextRequest) {
 
     const includeKeywords = parseStringList(body?.includeKeywords);
     const excludeKeywords = parseStringList(body?.excludeKeywords);
+    const excludeBoards = parseStringList(body?.excludeBoards);
 
     const fromDate = body?.fromDate ? new Date(body.fromDate) : null;
     const toDate = body?.toDate ? new Date(body.toDate) : null;
@@ -131,6 +132,7 @@ export async function POST(request: NextRequest) {
         directUrls: directUrls.length ? JSON.stringify(directUrls) : null,
         includeWords: JSON.stringify(includeKeywords),
         excludeWords: JSON.stringify(excludeKeywords),
+        excludeBoards: JSON.stringify(excludeBoards),
         fromDate,
         toDate,
         minViewCount,

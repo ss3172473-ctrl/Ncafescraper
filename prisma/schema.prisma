@@ -124,6 +124,7 @@ model ScrapeJob {
   directUrls     String?  // JSON 배열 (직접 스크랩할 게시글 URL 목록; 있으면 검색 대신 사용)
   includeWords   String?  // JSON 배열
   excludeWords   String?  // JSON 배열
+  excludeBoards  String?  // JSON 배열
   fromDate       DateTime?
   toDate         DateTime?
   minViewCount   Int?

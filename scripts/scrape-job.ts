@@ -45,6 +45,7 @@ type ArticleCandidate = {
   commentCount: number;
   likeCount: number;
   boardType: string;
+  boardName: string;
   addedAt: Date | null;
   queryKeyword: string;
 };
@@ -228,6 +229,31 @@ function isAllowedByWords(text: string, includeWords: string[], excludeWords: st
 function matchesAnyKeyword(text: string, keywords: string[]): boolean {
   const compact = text.replace(/\s+/g, "").toLowerCase();
   return keywords.some((kw) => compact.includes(kw.replace(/\s+/g, "").toLowerCase()));
+}
+
+function normalizeBoardToken(value: string): string {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/\s+/g, "")
+    .trim();
+}
+
+function isExcludedBoard(candidate: ArticleCandidate, excludedBoardTokens: Set<string>): boolean {
+  if (!excludedBoardTokens.size) return false;
+  const boardTokens = [candidate.boardType, candidate.boardName]
+    .filter(Boolean)
+    .map((value) => normalizeBoardToken(String(value)));
+
+  for (const board of boardTokens) {
+    if (!board) continue;
+    for (const blocked of excludedBoardTokens) {
+      if (!blocked) continue;
+      if (board === blocked || board.includes(blocked) || blocked.includes(board)) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 function includesKeyword(text: string, keyword: string): boolean {
@@ -965,6 +991,15 @@ async function fetchCandidatesFromSearchApi(
     // Search API subjects can contain highlight markup like <em>...</em>.
     const subject = String(item.subject || "").replace(/<[^>]*>/g, "");
     const addedAtSafe = parseNaverCafeDate(item.addDate);
+    const boardName = String(
+      item.boardName ||
+        item.boardTitle ||
+        item.menuName ||
+        item.menu ||
+        item.menuTitle ||
+        item.board ||
+        ""
+    ).trim();
 
     rows.push({
       articleId: Number(item.articleId),
@@ -978,6 +1013,7 @@ async function fetchCandidatesFromSearchApi(
       commentCount: Number(item.commentCount || 0),
       likeCount: Number(item.likeItCount || 0),
       boardType: String(item.boardType || "L"),
+      boardName,
       addedAt: addedAtSafe,
       queryKeyword: keyword,
     });
@@ -992,6 +1028,7 @@ async function collectArticleCandidates(
   cafeId: string,
   cafeName: string,
   keywords: string[],
+  excludedBoards: Set<string>,
   maxUrls: number,
   baseCollected: number
 ): Promise<{ cafeNumericId: string; candidates: ArticleCandidate[] }> {
@@ -1025,6 +1062,10 @@ async function collectArticleCandidates(
     for (let i = 0; i < take; i += 1) {
       const row = rows[i];
       if (!row) continue;
+      if (isExcludedBoard(row, excludedBoards)) {
+        console.log(`[collect] skip excluded board url=${row.url} board=${row.boardType}/${row.boardName}`);
+        continue;
+      }
       if (seen.has(row.articleId)) continue;
       seen.add(row.articleId);
       if (candidates.length < maxUrls) {
@@ -1352,8 +1393,10 @@ async function run(jobId: string) {
   const directUrls = parseJsonStringArray(job.directUrls);
   const includeWords = parseJsonStringArray(job.includeWords);
   const excludeWords = parseJsonStringArray(job.excludeWords);
+  const excludeBoards = parseJsonStringArray(job.excludeBoards);
   const cafeIds = parseJsonStringArray(job.cafeIds);
   const cafeNames = parseJsonStringArray(job.cafeNames);
+  const excludedBoardTokens = new Set(excludeBoards.map((value) => normalizeBoardToken(value)));
 
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({
@@ -1467,6 +1510,7 @@ async function run(jobId: string) {
           cafeId,
           cafeName,
           keywords,
+          excludedBoardTokens,
           // Candidate cap per cafe (keep stable even with many keywords).
           alreadyEnough ? 1 : Math.min(120, Math.max(30, Math.ceil(job.maxPosts * 6))),
           collected.length

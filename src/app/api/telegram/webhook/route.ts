@@ -88,6 +88,7 @@ async function handleScrape(chatId: string, rest: string) {
   let minCommentCount: number | null = null;
   let maxPosts = 80;
   let useAutoFilter = true;
+  const excludeBoards = parseCommaList(kv.excludeboards || kv.excludeBoard || "");
 
   if (Object.keys(kv).length > 0) {
     cafeIds = parseCommaList(kv.cafes || kv.cafe || "");
@@ -129,6 +130,7 @@ async function handleScrape(chatId: string, rest: string) {
       keywords: JSON.stringify(keywords),
       includeWords: JSON.stringify([]),
       excludeWords: JSON.stringify([]),
+      excludeBoards: JSON.stringify(excludeBoards),
       minViewCount,
       minCommentCount,
       useAutoFilter,
@@ -183,4 +185,3 @@ export async function POST(request: Request) {
 
   return NextResponse.json({ ok: true });
 }
-
