@@ -1670,7 +1670,7 @@ async function main() {
       .update({
         where: { id: jobId },
         data: {
-          status: "FAILED",
+          status: cancelled ? "CANCELLED" : "FAILED",
           errorMessage: cancelled ? "cancelled by user" : message,
           completedAt: new Date(),
         },
