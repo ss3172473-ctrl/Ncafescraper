@@ -33,6 +33,21 @@ function parseUrlLines(input: unknown): string[] {
     .filter(Boolean);
 }
 
+function formatCreateError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  const code = (error as { code?: string } | undefined)?.code;
+
+  if (process.env.NODE_ENV === "production") {
+    if (code === "P1001") {
+      return "데이터베이스 연결 실패. DATABASE_URL이 유효한지 확인하세요.";
+    }
+    return "스크랩 작업 생성 중 오류가 발생했습니다.";
+  }
+
+  if (code) return `[${code}] ${message}`;
+  return message || "알 수 없는 오류";
+}
+
 export async function GET() {
   const user = await getCurrentUser();
   if (!user) {
@@ -60,7 +75,15 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const body = await request.json();
+    let body: Record<string, unknown>;
+    try {
+      body = (await request.json()) as Record<string, unknown>;
+    } catch {
+      return NextResponse.json(
+        { success: false, error: "요청 본문 JSON 파싱에 실패했습니다." },
+        { status: 400 }
+      );
+    }
 
     const keywords = parseCommaList(body?.keywords);
     const directUrls = parseUrlLines(body?.directUrls);
@@ -152,7 +175,7 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     console.error("스크랩 작업 생성 실패:", error);
     return NextResponse.json(
-      { success: false, error: "스크랩 작업 생성 중 오류가 발생했습니다." },
+      { success: false, error: formatCreateError(error) },
       { status: 500 }
     );
   }
