@@ -1420,7 +1420,7 @@ async function collectCandidatesForKeyword(
 
     if (pageRows.length === 0) {
       // Keep scanning remaining pages (bounded to 4) so UI can confirm we attempted deep scan.
-      await sleep(50 + Math.floor(Math.random() * 50));
+      await sleep(10 + Math.floor(Math.random() * 20));
       continue;
     }
 
@@ -1446,7 +1446,7 @@ async function collectCandidatesForKeyword(
     }
 
     // Small delay to reduce burstiness and avoid rate-limit errors.
-    await sleep(50 + Math.floor(Math.random() * 50));
+    await sleep(10 + Math.floor(Math.random() * 20));
     // NOTE: Do NOT break early by date or by candidate count.
     // Always scan all hardCapPages (4) so the UI shows 4/4 and user gets maximum coverage.
   }
@@ -1501,7 +1501,7 @@ async function parsePost(
   for (const u of urlVariants) {
     visited.push(u);
     await withTimeout(page.goto(u, { waitUntil: "domcontentloaded", timeout: 35000 }), 45000, "page.goto");
-    await sleep(400);
+    await sleep(100);
     console.log(`[parse] loaded url=${page.url()}`);
 
     if (page.url().includes("nidlogin")) {
@@ -1551,7 +1551,7 @@ async function parsePost(
       const clicks = Math.min(count, 6);
       for (let i = 0; i < clicks; i += 1) {
         await candidates.nth(i).click({ timeout: 1500 }).catch(() => undefined);
-        await sleep(80);
+        await sleep(30);
       }
 
       await frame
@@ -1559,7 +1559,7 @@ async function parsePost(
           window.scrollTo(0, document.body.scrollHeight);
         })
         .catch(() => undefined);
-      await sleep(150);
+      await sleep(50);
     }
 
     // Always scroll to ensure article body/comments are rendered before extraction.
@@ -1568,7 +1568,7 @@ async function parsePost(
         window.scrollTo(0, document.body.scrollHeight);
       })
       .catch(() => undefined);
-    await sleep(300);
+    await sleep(50);
 
     console.log("[parse] extracting post body/comments text");
     const bodyTextRaw = await extractPostBodyText(frame);
@@ -1594,7 +1594,7 @@ async function parsePost(
         45000,
         "page.goto feUrl"
       ).catch(() => undefined);
-      await sleep(400);
+      await sleep(100);
       console.log(`[parse] FE loaded url=${page.url()}`);
       commentsTextRaw = await extractCommentsText(page);
       commentsText = String(commentsTextRaw || "").trim();
@@ -1997,7 +1997,7 @@ async function run(jobId: string) {
   }
 
   const flushSheetRows = async (force = false) => {
-    const shouldFlush = force ? sheetPending.length > 0 : sheetPending.length >= 1;
+    const shouldFlush = force ? sheetPending.length > 0 : sheetPending.length >= 20;
     if (!shouldFlush) return;
 
     const rowsToSend = [...sheetPending];
@@ -2205,7 +2205,7 @@ async function run(jobId: string) {
           }
 
           // --- Concurrent Processing Setup ---
-          const concurrency = 12; // Increased from 5 for speed as per user request
+          const concurrency = 20; // Increased to 20 for max speed
           const limit = pLimit(concurrency);
 
           const tasks = collectResult.candidates.filter(cand => {
@@ -2295,22 +2295,24 @@ async function run(jobId: string) {
               remainingForCafe -= 1;
               cafeKeywordCollected += 1;
 
-              // Update progress after each successful collection
-              await setJobProgress(jobId, {
-                stage: "PARSE",
-                cafeId,
-                cafeName,
-                keyword,
-                collected: collected.length,
-                message: "parsing",
-              }, {
-                cafeId,
-                cafeName,
-                keyword,
-                status: "parsing",
-                totalResults: collectResult.taken,
-                collected: collected.length,
-              }).catch(() => undefined);
+              // Update progress periodically to reduce DB load (every 5 items) or if it's the last one for this batch
+              if (collected.length % 5 === 0) {
+                await setJobProgress(jobId, {
+                  stage: "PARSE",
+                  cafeId,
+                  cafeName,
+                  keyword,
+                  collected: collected.length,
+                  message: "parsing",
+                }, {
+                  cafeId,
+                  cafeName,
+                  keyword,
+                  status: "parsing",
+                  totalResults: collectResult.taken,
+                  collected: collected.length,
+                }).catch(() => undefined);
+              }
 
               sheetPending.push({
                 jobId,

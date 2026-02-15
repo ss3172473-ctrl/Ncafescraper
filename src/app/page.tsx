@@ -472,14 +472,14 @@ export default function DashboardPage() {
     }
   }, []);
 
-  const fetchJobs = useCallback(async () => {
+  const fetchJobs = useCallback(async (quiet = false) => {
     try {
-      setJobsLoading(true);
+      if (!quiet) setJobsLoading(true);
       const res = await fetch("/api/scrape-jobs");
       const data = await res.json();
       if (data?.success) setJobs(data.data);
     } finally {
-      setJobsLoading(false);
+      if (!quiet) setJobsLoading(false);
     }
   }, []);
 
@@ -533,7 +533,7 @@ export default function DashboardPage() {
     let alive = true;
     const tick = async () => {
       if (!alive) return;
-      await fetchJobs();
+      await fetchJobs(true);
     };
     const t = setInterval(tick, 5000);
     return () => {
@@ -632,7 +632,7 @@ export default function DashboardPage() {
         const cafeName = names[0] || cafeId;
         const p = progressByJobId[job.id] || null;
         const st = resolveDisplayStatus(job.status, p);
-        const collected = typeof p?.collected === "number" ? p.collected : (job.resultCount ?? 0);
+        const collected = typeof p?.sheetSynced === "number" ? p.sheetSynced : (job.sheetSynced ?? 0);
         return { jobId: job.id, cafeId, cafeName, status: st, collected };
       })
       .filter((c) => c.cafeId);
