@@ -1,4 +1,4 @@
-# 네이버 카페 아카이빙 (naver-bc-automation)
+# 네이버 카페 아카이빙 (Ncafescraper)
 
 네이버 카페에서 **내가 열람 가능한 게시글**을 조건 기반으로 찾아서,
 **본문 전체 텍스트 + 댓글 전체 텍스트**를 Google Sheets로 아카이빙하는 프로젝트입니다.
@@ -182,13 +182,12 @@ Railway 콘솔에서:
 
 ## 10) 주요 파일(인수인계용)
 
-- 웹 UI: `naver-bc-automation/src/app/page.tsx`
-- 작업 생성 API: `naver-bc-automation/src/app/api/scrape-jobs/route.ts`
-- progress 조회 API: `naver-bc-automation/src/app/api/scrape-jobs/[id]/progress/route.ts`
-- 버전 API: `naver-bc-automation/src/app/api/version/route.ts`
-- 워커 상태 API: `naver-bc-automation/src/app/api/worker-status/route.ts`
-- Worker 큐: `naver-bc-automation/scripts/queue-worker.ts`
-- Worker 스크래퍼: `naver-bc-automation/scripts/scrape-job.ts`
-- Prisma 스키마: `naver-bc-automation/prisma/schema.prisma`
-- Sheets 전송: `naver-bc-automation/src/lib/sheets.ts`
-
+- 웹 UI: `src/app/page.tsx`
+- 작업 생성 API: `src/app/api/scrape-jobs/route.ts`
+- progress 조회 API: `src/app/api/scrape-jobs/[id]/progress/route.ts`
+- 버전 API: `src/app/api/version/route.ts`
+- 워커 상태 API: `src/app/api/worker-status/route.ts`
+- Worker 큐: `scripts/queue-worker.ts`
+- Worker 스크래퍼: `scripts/scrape-job.ts`
+- Prisma 스키마: `prisma/schema.prisma`
+- Sheets 전송: `src/lib/sheets.ts`
